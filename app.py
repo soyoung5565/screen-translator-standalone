@@ -1577,4 +1577,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 必须用 sys.exit(main()) 把退出码传出去：selftest() 失败返回 1、
+    # 无 key 返回 2，直接调 main() 会让窗口程序的退出码恒为 0，
+    # 自动化验收就会把「自检失败」误读成「通过」。
+    sys.exit(main())
