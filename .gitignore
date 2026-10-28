@@ -5,3 +5,6 @@ __pycache__/
 config.json
 *.png
 !docs/*.png
+build/
+dist/
+selftest.log

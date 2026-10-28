@@ -22,11 +22,12 @@ import os
 import sys
 import time
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect
-from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QCursor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPropertyAnimation, QObject, QAbstractNativeEventFilter
+from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QCursor, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QSlider, QComboBox,
-    QVBoxLayout, QHBoxLayout,
+    QVBoxLayout, QHBoxLayout, QSystemTrayIcon, QMenu, QAction,
+    QGraphicsOpacityEffect,
 )
 
 import mss
@@ -80,6 +81,145 @@ def exclude_from_capture(hwnd):
         return False
 
 
+def resource_path(name):
+    """资源路径 —— 兼容 PyInstaller 单文件（解包到 sys._MEIPASS）。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+_ARROW_PATH = None
+
+
+def combo_arrow_path():
+    """
+    QComboBox 下拉三角 —— Qt 样式表不能画三角形，只能给图片。
+    运行时画一张灰色小三角存到临时目录，供 CSS url() 引用。
+    """
+    global _ARROW_PATH
+    if _ARROW_PATH and os.path.exists(_ARROW_PATH):
+        return _ARROW_PATH
+    from PyQt5.QtGui import QPainterPath
+    pm = QPixmap(10, 6)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#8b949e"))
+    path = QPainterPath()
+    path.moveTo(0, 0)
+    path.lineTo(10, 0)
+    path.lineTo(5, 6)
+    path.closeSubpath()
+    p.drawPath(path)
+    p.end()
+    tmp = os.environ.get("TEMP") or os.environ.get("TMP") or os.path.expanduser("~")
+    out = os.path.join(tmp, "screen_trans_combo_arrow.png")
+    pm.save(out, "PNG")
+    _ARROW_PATH = out.replace("\\", "/")
+    return _ARROW_PATH
+
+
+def apply_dark_titlebar(hwnd):
+    """把 Windows 标题栏染成暗色，与深色 UI 统一。"""
+    try:
+        dwm = ctypes.windll.dwmapi
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20  # Win10 20H1+
+        val = ctypes.c_int(1)
+        r = dwm.DwmSetWindowAttribute(ctypes.c_void_p(int(hwnd)),
+                                      DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                      ctypes.byref(val), ctypes.sizeof(val))
+        if r != 0:  # 老版本 Win10 用 19
+            dwm.DwmSetWindowAttribute(ctypes.c_void_p(int(hwnd)), 19,
+                                      ctypes.byref(val), ctypes.sizeof(val))
+        return True
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
+#  全局热键（RegisterHotKey）
+# ═══════════════════════════════════════════════════════════════
+
+WM_HOTKEY = 0x0312
+
+HOTKEY_DEFS = [
+    # (id, Ctrl+Alt+<key>, name, 说明) —— 用 Ctrl+Alt 前缀，避免和游戏的 Ctrl+S 冲突
+    (1, ord("S"), "toggle", "开始/停止翻译"),
+    (2, ord("H"), "hide", "隐藏/显示区域框"),
+    (3, ord("Q"), "quit", "退出"),
+]
+
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_NOREPEAT = 0x4000
+
+
+class HotkeyFilter(QObject, QAbstractNativeEventFilter):
+    """
+    全局热键 —— 面板没焦点时也能触发（打游戏时按键仍然有效）。
+
+    实现：win32 RegisterHotKey 注册到本线程，WM_HOTKEY 从 Qt 的事件泵里
+    拦出来，转成 Qt 信号。
+
+    ⚠️ 必须同时继承 QAbstractNativeEventFilter，否则 installNativeEventFilter
+    会报 "argument 1 has unexpected type"。
+    """
+
+    triggered = pyqtSignal(str)
+
+    def __init__(self):
+        QObject.__init__(self)
+        QAbstractNativeEventFilter.__init__(self)
+        self._registered = []
+
+    def register_all(self):
+        """注册全部热键；失败的单独返回，不阻塞其余热键。"""
+        ok, failed = [], []
+        for hid, vk, name, desc in HOTKEY_DEFS:
+            r = ctypes.windll.user32.RegisterHotKey(
+                None, hid, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, vk)
+            if r:
+                self._registered.append(hid)
+                ok.append("%s（Ctrl+Alt+%s）" % (desc, chr(vk)))
+            else:
+                failed.append("%s（Ctrl+Alt+%s）" % (desc, chr(vk)))
+        return ok, failed
+
+    def unregister_all(self):
+        for hid in self._registered:
+            try:
+                ctypes.windll.user32.UnregisterHotKey(None, hid)
+            except Exception:
+                pass
+        self._registered = []
+
+    def nativeEventFilter(self, event_type, message):
+        """Qt5 签名。message 是 MSG*，取出 message 字段比对 WM_HOTKEY。"""
+        try:
+            if event_type == b"windows_generic_MSG" or event_type == "windows_generic_MSG":
+                msg = ctypes.cast(int(message), ctypes.POINTER(MSG)).contents
+                if msg.message == WM_HOTKEY:
+                    for hid, vk, name, desc in HOTKEY_DEFS:
+                        if msg.wParam == hid:
+                            self.triggered.emit(name)
+                            break
+        except Exception:
+            pass
+        return False, 0
+
+
+class MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", ctypes.c_void_p),
+        ("message", ctypes.c_uint),
+        ("wParam", ctypes.c_size_t),
+        ("lParam", ctypes.c_ssize_t),
+        ("time", ctypes.c_uint),
+        ("pt_x", ctypes.c_long),
+        ("pt_y", ctypes.c_long),
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════
 #  屏幕捕获
 # ═══════════════════════════════════════════════════════════════
@@ -120,26 +260,46 @@ def to_jpeg_b64(img, max_dim=1400, quality=78):
 class TextBlock:
     """屏幕绝对坐标的文字块。"""
 
-    __slots__ = ("text", "x", "y", "w", "h")
+    __slots__ = ("text", "x", "y", "w", "h", "bg_lum")
 
-    def __init__(self, text, x, y, w, h):
+    def __init__(self, text, x, y, w, h, bg_lum=None):
         self.text = text
         self.x = int(x)
         self.y = int(y)
         self.w = int(w)
         self.h = int(h)
+        self.bg_lum = bg_lum   # 该处背景亮度 0-255；None = 未知（按浅底处理）
 
     def __repr__(self):
         return "TextBlock(%r, %d,%d %dx%d)" % (self.text[:20], self.x, self.y, self.w, self.h)
 
 
-def boxes_to_blocks(boxes, region_x, region_y, region_w, region_h):
+def boxes_to_blocks(boxes, region_x, region_y, region_w, region_h, img=None):
     """
     LLM 返回的 0-1000 归一化坐标 → 屏幕绝对坐标。
 
     注意：截图时可能做过缩放（max_dim），但归一化坐标与缩放无关，
     直接按 region 尺寸换算即可。
+
+    给了 img（截图原图）时，顺带采样每块所在位置的背景亮度，
+    覆盖层据此自动切换「深底→白字深罩 / 浅底→黑红字白罩」的配色。
+
+    ⚠️ 模型给出的 h 偶尔严重偏小（实测出现过 h=3px / h=7px，而原文实际
+    17~22px），w 也常偏窄（遮罩盖不住整句原文）。直接信它会让译文字号
+    缩到看不清、遮罩也盖不住原文。这里对 h 做下限兜底，对 w 做加宽兜底。
     """
+    # 先算同图中位数高度，作为偏小值的兜底基准（含所有正值，不只大值）
+    hs = []
+    for b in boxes:
+        try:
+            hh = b["h"] / 1000.0 * region_h
+        except (KeyError, TypeError):
+            continue
+        if hh > 0:
+            hs.append(hh)
+    hs.sort()
+    median_h = hs[len(hs) // 2] if hs else 0
+
     blocks = []
     for b in boxes:
         zh = b.get("zh", "").strip()
@@ -149,10 +309,252 @@ def boxes_to_blocks(boxes, region_x, region_y, region_w, region_h):
         y = region_y + b["y"] / 1000.0 * region_h
         w = b["w"] / 1000.0 * region_w
         h = b["h"] / 1000.0 * region_h
-        if w < 4 or h < 4:
+        if w < 4 or h < 2:
             continue
-        blocks.append(TextBlock(zh, x, y, w, h))
+
+        # h 兜底：低于中位数的 65% 或低于 11px 都视为模型量错，用中位数修正
+        if median_h >= 11 and (h < 11 or h < median_h * 0.65):
+            y = y + h / 2.0 - median_h / 2.0   # 以原框中心对齐
+            h = median_h
+        elif h < 11:
+            h = 11
+
+        # w 兜底：遮罩必须盖住原文整句。模型量窄了会让英文后半截露出来
+        # （实测遮盖率只有 68~85%）。框太窄时按原文高度估算常见行宽。
+        min_w = max(h * 3.0, 60.0)
+        if w < min_w:
+            w = min_w
+
+        bg_lum = None
+        if img is not None:
+            # ⚠️ 截图可能被 to_jpeg_b64 缩放过；此处 img 是**原尺寸**截图。
+            # 归一化坐标 → 原图像素必须按原图宽高换算，不能用 region_w/h
+            # （两者通常相等，但裁剪/缩放后不等，早先写法会采错位置）。
+            ix = int(b["x"] / 1000.0 * img.width)
+            iy = int(b["y"] / 1000.0 * img.height)
+            iw = max(1, int(w / float(region_w) * img.width))
+            ih = max(1, int(h / float(region_h) * img.height))
+            bg_lum = sample_bg_luminance(img, ix, iy, iw, ih)
+
+        blocks.append(TextBlock(zh, x, y, w, h, bg_lum))
     return blocks
+
+
+def sample_bg_luminance(img, x, y, w, h):
+    """
+    采样一块区域的**背景**亮度（0-255）。
+
+    坑：不能取平均 —— 文字墨迹会把平均值拉偏；也不能取最亮 ——
+    深底白字时最亮的是字本身。这里取中位数：框内占多数的像素就是背景。
+    """
+    try:
+        from PIL import Image as _Image
+        crop = img.crop((max(0, x), max(0, y),
+                         min(img.width, x + max(1, w)), min(img.height, y + max(1, h))))
+        crop = crop.convert("L").resize((min(16, crop.width), min(8, crop.height)))
+        vals = sorted(crop.getdata())
+        if not vals:
+            return 128
+        return vals[len(vals) // 2]
+    except Exception:
+        return 128
+
+
+# ═══════════════════════════════════════════════════════════════
+#  墨迹校正（模型坐标不稳的根治手段）
+# ═══════════════════════════════════════════════════════════════
+
+INK_TOL = 60          # 与背景亮度差超过这个值即视为「墨迹」
+INK_MIN_ROW_PIX = 2   # 一行至少这么多墨迹像素才算文字行
+
+
+def _same_row(a, b):
+    """两个块的垂直中心是否落在同一行（用于邻居边界判断）。"""
+    ah = max(6, a.h * 0.6)
+    return abs((a.y + a.h / 2.0) - (b.y + b.h / 2.0)) < ah
+
+
+def refine_blocks_with_ink(blocks, img, region_x, region_y, region_w, region_h,
+                           tol=INK_TOL):
+    """
+    用**截图实测的墨迹包围盒**校正模型返回的框。
+
+    为什么必须做：
+      同一张图多次调用，模型返回的块数在 0~5 之间抖动，w 常偏窄
+      （遮罩只盖住英文前半截，遮盖率 68~85%），h 有时给到 3px，
+      y 也会整体偏上/偏下几个像素。这些都不是渲染 bug，是模型噪声 ——
+      再优化渲染也治不了，只能拿像素反推真实框。
+
+    ⚠️ 窗口尺寸**绝不能用当前块的 h 推**：h 就是最大的误差源。
+       早先版本按 `±0.35×h` 开窗，h=8 时窗口只有 11px 高，
+       真行 22px 只扫到顶部 6px，校正反而比原框更差（IoU 0.09→0.20）。
+       现在统一用**同图中位数高度**做尺度基准。
+
+    做法：
+      1. 垂直窗口 = 模型 y 上方 0.7×median_h 到 y+h 下方 1.3×median_h；
+      2. 水平窗口 = 模型 x 左侧 0.8×median_h 到右侧 max(3w, w+240)；
+         再用同行邻居的实际宽度夹住，避免吃进相邻文字；
+      3. 按行统计墨迹 → 连续行带 → 选「离模型上边缘最近 + 高度最接近中位数」的带；
+      4. 行带给出真实 y/h，带内墨迹左右极值给出真实 x/w。
+
+    兜底（任一命中就保留原框，宁可不改也不能改坏）：
+      * 找不到墨迹；* 结果离谱地大（吃进图标/边框）；* 与原框完全不相交。
+    """
+    if not blocks or img is None:
+        return blocks
+    try:
+        gray = img.convert("L")
+        px = gray.load()
+    except Exception:
+        return blocks
+    GW, GH = gray.size
+    if GW <= 0 or GH <= 0:
+        return blocks
+
+    # ── 尺度基准：不能取自模型 h（h 就是最大误差源）──
+    # 模型给的 h 系统性偏小（实测 6~8px，真实 17~22px），
+    # 若拿它当窗口尺度，22px 的真行只会被扫到顶部 14px，高度永远校正。
+    # 这里给一个绝对下限 12px，并用中位数做上限保护。
+    hs = sorted(b.h for b in blocks if 3 <= b.h <= 200)
+    median_h = hs[len(hs) // 2] if hs else 16
+    unit = max(12, min(median_h, 48))
+
+    out = []
+    for b in blocks:
+        lx, ly = b.x - region_x, b.y - region_y
+        bg = b.bg_lum
+        if bg is None:
+            bg = sample_bg_luminance(img, lx, ly, max(4, b.w), max(4, b.h))
+
+        # 垂直窗口与 h 解耦：向上 1.5×unit、向下 max(h,unit)+2.5×unit。
+        # 这个余量能覆盖「模型 h 比真实小 2.5 倍」的最坏情况（实测就是）。
+        x0 = int(lx - unit * 0.8)
+        x1 = int(lx + max(b.w * 3.0, b.w + 240))
+        y0 = int(ly - unit * 1.5)
+        y1 = int(ly + max(b.h, unit) + unit * 2.5)
+
+        # 同行邻居夹边界（用邻居的真实起点/终点，不用它的 w）
+        for o in blocks:
+            if o is b or not _same_row(b, o):
+                continue
+            olx = o.x - region_x
+            if olx > lx + 2:
+                x1 = min(x1, int(olx - 2))
+            elif olx + o.w <= lx + 2:
+                x0 = max(x0, int(olx + o.w + 2))
+
+        x0, x1 = max(0, x0), min(GW, x1)
+        y0, y1 = max(0, y0), min(GH, y1)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            out.append(b)
+            continue
+
+        # ── 逐行墨迹统计 ──
+        solid = []
+        for yy in range(y0, y1):
+            c = 0
+            for xx in range(x0, x1):
+                if abs(px[xx, yy] - bg) >= tol:
+                    c += 1
+            if c >= INK_MIN_ROW_PIX:
+                solid.append(yy)
+        if not solid:
+            out.append(b)
+            continue
+
+        # 连续行带：间隔 ≤2px 合并（抗抗锯齿、小写字母间隙）
+        raw_runs = [[solid[0]]]
+        for yy in solid[1:]:
+            if yy - raw_runs[-1][-1] <= 2:
+                raw_runs[-1].append(yy)
+            else:
+                raw_runs.append([yy])
+        runs = [r for r in raw_runs if len(r) >= 3]
+        if not runs:
+            out.append(b)
+            continue
+
+        # 选带：离模型上边缘近 + 高度接近中位数
+        best, best_score = None, None
+        for r in runs:
+            rh = r[-1] - r[0] + 1
+            score = abs(r[0] - ly) / float(unit) + 0.6 * abs(rh - median_h) / float(unit)
+            if best_score is None or score < best_score:
+                best_score, best = score, r
+        rows = best
+        ny0, ny1 = rows[0], rows[-1]
+
+        # ── 行带内墨迹的左右极值 ──
+        nx0, nx1 = 10 ** 9, -1
+        for yy in rows:
+            for xx in range(x0, x1):
+                if abs(px[xx, yy] - bg) >= tol:
+                    if xx < nx0:
+                        nx0 = xx
+                    if xx > nx1:
+                        nx1 = xx
+        if nx1 < nx0:
+            out.append(b)
+            continue
+
+        new_h = ny1 - ny0 + 1
+        new_w = nx1 - nx0 + 1
+
+        # 离谱兜底：吃进图标/整段版面
+        # ⚠️ 上限同样不能用 median_h 推 —— median_h 由一批偏小的模型 h 组成
+        # （实测 6~8px），真行 22px 就会被判「离谱」而放弃校正。
+        # 用带 12px 下限的 unit 做基准。
+        if new_h > max(16, unit * 3.0) or new_w > max(b.w * 4.0, b.w + 320):
+            out.append(b)
+            continue
+        # 必须与原框相交（防串到别的行）
+        if nx1 < lx or nx0 > lx + max(4, b.w):
+            out.append(b)
+            continue
+        # 高度至少 3px，否则没有校正价值
+        if new_h < 3:
+            out.append(b)
+            continue
+
+        nb = TextBlock(b.text, region_x + nx0, region_y + ny0, new_w, new_h,
+                       _bg_from_ring(img, nx0, ny0, new_w, new_h, bg))
+        out.append(nb)
+    return out
+
+
+def _bg_from_ring(img, x, y, w, h, default):
+    """
+    从框**外侧一圈**采背景色，而不是框内。
+
+    框内取了中位数仍可能被字本身带偏 —— 深底白字、粗体大标题时，
+    框内白像素能占到近一半；实测「控制面板」这块 26px 白字，
+    框内中位数算出 lum=88（真背景 36），离阈值 110 已经不远，
+    再偏一点就会把深底判成浅底、贴出一块白斑。
+    """
+    try:
+        gw, gh = img.size
+        ring = 3
+        x0, y0 = max(0, x - ring), max(0, y - ring)
+        x1, y1 = min(gw, x + w + ring), min(gh, y + h + ring)
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            return default
+        crop = img.crop((x0, y0, x1, y1)).convert("L")
+        vals = []
+        W_, H_ = crop.size
+        px_ = crop.load()
+        for yy in range(H_):
+            for xx in range(W_):
+                inside = (ring <= xx < W_ - ring) and (ring <= yy < H_ - ring)
+                if not inside:
+                    vals.append(px_[xx, yy])
+        if not vals:
+            return default
+        vals.sort()
+        return vals[len(vals) // 2]
+    except Exception:
+        return default
+
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -175,14 +577,18 @@ class TranslateWorker(QThread):
         self._source = "auto"
         self._target = "zh"
         self._pixel_mode = True
+        self._interval = 3.0
+        self._last_call = 0.0
         self.capture = None
         self._last_hash = None
 
-    def configure(self, region, source, target, pixel_mode=True):
+    def configure(self, region, source, target, pixel_mode=True, interval=None):
         self._region = region
         self._source = source
         self._target = target
         self._pixel_mode = pixel_mode
+        if interval is not None:
+            self._interval = max(0.5, float(interval))
         self._last_hash = None   # 强制重翻
 
     def stop(self):
@@ -208,16 +614,28 @@ class TranslateWorker(QThread):
                 # 变化检测：内容没变就不重复请求 API
                 hsh = hashlib.md5(img.tobytes()).hexdigest()
                 if hsh == self._last_hash:
-                    time.sleep(0.6)
+                    self._idle_wait()
                     continue
+
+                # 节流：距上次请求不足「刷新间隔」就等着，避免动态画面疯狂烧额度
+                since = time.time() - self._last_call
+                if since < self._interval:
+                    time.sleep(self._interval - since)
+                    continue
+
                 self._last_hash = hsh
+                self._last_call = time.time()
 
                 self.status_update.emit("翻译中…")
                 self._process(img, x, y, w, h)
             except Exception as e:
                 self.error_occurred.emit("%s: %s" % (type(e).__name__, e))
                 time.sleep(2)
-            time.sleep(0.4)
+            self._idle_wait()
+
+    def _idle_wait(self):
+        """轮询节拍 —— 固定 0.35s 采样，保证及时抓到画面变化。"""
+        time.sleep(0.35)
 
     def _process(self, img, ox, oy, ow, oh):
         b64 = to_jpeg_b64(img)
@@ -225,7 +643,11 @@ class TranslateWorker(QThread):
         if self._pixel_mode:
             boxes = self.translator.translate_image_boxes(b64, self._source, self._target)
             if boxes:
-                blocks = boxes_to_blocks(boxes, ox, oy, ow, oh)
+                # 传 img 进去，让每块带上背景亮度（覆盖层据此自适应配色）
+                blocks = boxes_to_blocks(boxes, ox, oy, ow, oh, img=img)
+                # 再用截图实测的墨迹框校正模型坐标 —— 模型 w/h 抖动是
+                # 主要误差源（遮罩盖不满原文/字号忽大忽小），只能靠像素校正根治
+                blocks = refine_blocks_with_ink(blocks, img, ox, oy, ow, oh)
                 self.blocks_ready.emit(blocks)
                 self.status_update.emit("像素级翻译 · %d 块" % len(blocks))
                 return
@@ -447,44 +869,93 @@ class PixelOverlay(QWidget):
 
     def _draw_block(self, p, block):
         """
-        半透明底色 + 红字。
-        底色 alpha 160 —— 原文能隐约透出，不至于完全看不见。
-        框只比原文大 2px，避免压到相邻内容。
+        译文贴回原位。
+
+        视觉策略（对应"原文被替换"的观感）：
+          * 白底不透明遮罩（alpha 230）—— alpha 160 时原文英文会透出来，
+            视觉上变成"中英叠字"，读起来很脏（实测被指"只盖住左半"）。
+          * 遮罩宽度至少覆盖原文框，译文超长则向右延伸但不缩到看不清。
+          * 深红字，字号按原文高度自适应（见 _fit_font）。
 
         注意：block 里存的是**屏幕绝对坐标**，而 QPainter 在 widget 上
         的坐标系原点是 widget 左上角 —— 必须减去 widget 原点，
         否则会叠加一层偏移（实际会画到两倍距离的位置）。
         """
         text = block.text
-        font = self._fit_font(block.h, text)
-        fm = QFontMetrics(font)
-        tw = fm.horizontalAdvance(text)
-        th = fm.height()
 
         # 绝对坐标 → widget 相对坐标
         ox = self.geometry().x()
         oy = self.geometry().y()
 
         pad = 2
+        base_w = block.w + pad * 2
+        base_h = block.h + pad * 2
+
+        # 先按原框宽做宽度适配，量出实际需要多宽
+        font = self._fit_font(block.h, text, max_w=max(8, base_w - 4))
+        fm = QFontMetrics(font)
+        tw = fm.horizontalAdvance(text)
+
         x = block.x - ox - pad
         y = block.y - oy - pad
-        w = max(block.w + pad * 2, tw + pad * 2)
-        h = max(block.h + pad * 2, th + pad)
+        w = max(base_w, tw + 6)
+        h = base_h
 
-        p.fillRect(QRect(x, y, w, h), QColor(255, 255, 255, 160))
-        p.setPen(QPen(QColor(200, 0, 0, 210), 1))
-        p.drawRect(QRect(x, y, w, h))
+        # 配色自适应：深色界面上贴白块极其刺眼（实测深色标题栏上是一块白斑），
+        # 所以深底用「深色罩 + 白字」，浅底用「白罩 + 深红字」。
+        dark_bg = block.bg_lum is not None and block.bg_lum < 110
+        if dark_bg:
+            p.fillRect(QRect(x, y, w, h), QColor(18, 20, 24, 235))
+            p.setPen(QPen(QColor(120, 220, 150, 120), 1))
+            p.drawRect(QRect(x, y, w, h))
+            p.setPen(QColor(140, 240, 170))
+        else:
+            # alpha 230 ≈ 90% 遮盖 —— 太低会让原文透出形成中英叠字
+            p.fillRect(QRect(x, y, w, h), QColor(255, 255, 255, 230))
+            p.setPen(QPen(QColor(200, 0, 0, 90), 1))
+            p.drawRect(QRect(x, y, w, h))
+            p.setPen(QColor(150, 0, 0))
 
-        p.setPen(QColor(190, 0, 0))
         p.setFont(font)
         p.drawText(QRect(x + 2, y, w - 4, h), Qt.AlignLeft | Qt.AlignVCenter, text)
 
     @staticmethod
-    def _fit_font(orig_h, text):
-        """按原文字高度选字号，上限 9pt，保证塞得进原位。"""
-        px = max(8, int(orig_h * 0.8))
-        pt = max(6, min(9, int(round(px * 0.75))))
-        return QFont("Microsoft YaHei", pt)
+    def _fit_font(orig_h, text=None, max_w=None):
+        """
+        按**原文高度**选字号（像素字号，不用 pointSize）。
+
+        实测标定（见 calibrate_font.py，Microsoft YaHei）：
+            墨高 ≈ 0.99 × 像素字号   →  像素字号 ≈ 1.01 × 目标高度
+            墨高 ≈ 0.76 × fm.height()
+
+        坑（都踩过）：
+          * 旧实现 clamp 到 9pt，16px 高的原文溢出 150%、56px 标题只占 43%；
+          * 之后改用 0.72×h 并结合 fm.height() 做校准，因为 fm.height()
+            比墨高大 ~1.3 倍，校准循环把字号又压掉一档，中文墨高只剩原文 54%。
+        正确做法：直接让墨高对齐原文高度，只用 fm.height() 做**上限**保护。
+        """
+        target = max(8, int(orig_h))
+
+        def make(sz):
+            f = QFont("Microsoft YaHei")
+            f.setPixelSize(max(6, sz))
+            return f
+
+        # 墨高 ≈ 1.0×像素字号 → 目标高度直接用
+        size = max(6, int(round(target * 1.01)))
+
+        # 宽度校准：只缩 10% 作为缓冲，其余交给「向右延伸」。
+        # 实测缩得更多会让长译文明显变小，而向右多出一小截远比字变小好读。
+        font = make(size)
+        if text and max_w:
+            floor_sz = max(6, int(round(size * 0.90)))
+            while size > floor_sz:
+                fm = QFontMetrics(font)
+                if fm.horizontalAdvance(text) <= max_w:
+                    break
+                size -= 1
+                font = make(size)
+        return font
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -509,9 +980,9 @@ LANG_PAIRS = [
 class ControlPanel(QWidget):
     def __init__(self, translator):
         super().__init__()
-        self.setWindowTitle("屏幕翻译器 — 独立版")
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle("屏幕翻译器")
+        # 普通窗口：任务栏有图标、Alt+Tab 能切、带标准标题栏/关闭按钮
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         self._drag_pos = None
 
         self.capture_region = CaptureRegion()
@@ -523,96 +994,252 @@ class ControlPanel(QWidget):
         self.worker.error_occurred.connect(self._on_error)
 
         self._setup_ui()
+        self._setup_tray()
+        self._setup_hotkeys()
         self.capture_region.region_changed.connect(self._on_region_changed)
         self.capture_region.show()
+        self.overlay.setGeometry(self.capture_region.geometry())
         self.overlay.show()
 
     # ── UI ──
     def _setup_ui(self):
+        """UI 按 Open Design tech-utility 方向实现（暗色仪表盘）。"""
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(9)
 
-        title = QLabel("🌐 屏幕翻译器 <span style='color:#666;font-size:11px'>独立版 · LLM 视觉</span>")
-        title.setStyleSheet("color:#00c8ff;font-size:15px;font-weight:bold;background:transparent;")
-        lay.addWidget(title)
+        # 统一控件高度，保证标签与输入控件垂直居中一致
+        CTL_H = 30
 
-        r1 = QHBoxLayout()
-        l1 = QLabel("翻译方向:")
-        l1.setStyleSheet("color:#ccc;background:transparent;")
+        # ── 头部：标题 + 模式徽标 ──
+        head = QHBoxLayout()
+        head.setSpacing(7)
+        title = QLabel("屏幕翻译器")
+        title.setStyleSheet(
+            "color:#e6edf3;font-size:14px;font-weight:600;"
+            "font-family:'Microsoft YaHei';background:transparent;")
+        badge = QLabel("LLM VISION")
+        badge.setFixedHeight(18)
+        badge.setStyleSheet(
+            "color:#2ea043;font-size:9px;letter-spacing:0.05em;"
+            "font-family:Consolas,monospace;padding:0 7px;border-radius:9px;"
+            "background:rgba(46,160,67,0.14);border:1px solid rgba(46,160,67,0.30);")
+        head.addWidget(title)
+        head.addWidget(badge)
+        head.addStretch()
+        lay.addLayout(head)
+
+        # ── 翻译方向 ──
+        r1 = QHBoxLayout(); r1.setSpacing(10)
+        l1 = QLabel("翻译方向"); l1.setFixedSize(62, CTL_H)
+        l1.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        l1.setStyleSheet(self._key_css())
         self.lang_combo = QComboBox()
+        self.lang_combo.setFixedHeight(CTL_H)
         for key, label in LANG_PAIRS:
             self.lang_combo.addItem(label, key)
         self.lang_combo.setStyleSheet(self._combo_css())
-        r1.addWidget(l1); r1.addWidget(self.lang_combo); r1.addStretch()
+        r1.addWidget(l1); r1.addWidget(self.lang_combo, 1)
         lay.addLayout(r1)
 
-        r2 = QHBoxLayout()
-        l2 = QLabel("刷新间隔:")
-        l2.setStyleSheet("color:#ccc;background:transparent;")
+        # ── 刷新间隔 ──
+        r2 = QHBoxLayout(); r2.setSpacing(10)
+        l2 = QLabel("刷新间隔"); l2.setFixedSize(62, CTL_H)
+        l2.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        l2.setStyleSheet(self._key_css())
         self.interval_slider = QSlider(Qt.Horizontal)
+        self.interval_slider.setFixedHeight(CTL_H)
         self.interval_slider.setRange(1, 15)
         self.interval_slider.setValue(3)
         self.interval_slider.setStyleSheet("""
-            QSlider::groove:horizontal{background:#444;height:6px;border-radius:3px;}
-            QSlider::handle:horizontal{background:#00c8ff;width:16px;height:16px;margin:-5px 0;border-radius:8px;}
+            QSlider::groove:horizontal{background:#30363d;height:4px;border-radius:2px;}
+            QSlider::handle:horizontal{background:#2ea043;width:12px;height:12px;
+                margin:-4px 0;border-radius:6px;}
+            QSlider::handle:horizontal:hover{background:#3fb950;}
+            QSlider::sub-page:horizontal{background:#2ea043;border-radius:2px;}
         """)
-        self.interval_label = QLabel("3 秒")
-        self.interval_label.setStyleSheet("color:#aaa;min-width:35px;background:transparent;")
-        self.interval_slider.valueChanged.connect(
-            lambda v: self.interval_label.setText("%d 秒" % v))
-        r2.addWidget(l2); r2.addWidget(self.interval_slider); r2.addWidget(self.interval_label)
+        self.interval_label = QLabel("3s")
+        self.interval_label.setFixedSize(30, CTL_H)
+        self.interval_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.interval_label.setStyleSheet(
+            "color:#e6edf3;font-size:11px;font-family:Consolas,monospace;"
+            "background:transparent;")
+        self.interval_slider.valueChanged.connect(self._on_interval_changed)
+        r2.addWidget(l2); r2.addWidget(self.interval_slider, 1); r2.addWidget(self.interval_label)
         lay.addLayout(r2)
 
-        r3 = QHBoxLayout()
+        # ── 贴字模式 ──
+        r3 = QHBoxLayout(); r3.setSpacing(10)
+        l3 = QLabel("贴字模式"); l3.setFixedSize(62, CTL_H)
+        l3.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        l3.setStyleSheet(self._key_css())
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("像素级（原位贴字）", True)
+        self.mode_combo.setFixedHeight(CTL_H)
+        self.mode_combo.addItem("像素级 · 原位贴字", True)
         self.mode_combo.addItem("整图翻译", False)
         self.mode_combo.setStyleSheet(self._combo_css())
-        r3.addWidget(self.mode_combo); r3.addStretch()
+        r3.addWidget(l3); r3.addWidget(self.mode_combo, 1)
         lay.addLayout(r3)
 
-        r4 = QHBoxLayout()
-        self.btn_start = QPushButton("▶ 开始翻译")
-        self.btn_start.setStyleSheet(self._btn_css("#006633", "#008844"))
+        # ── 按钮行 ──
+        lay.addSpacing(4)
+        r4 = QHBoxLayout(); r4.setSpacing(6)
+        r4.setContentsMargins(0, 0, 0, 0)
+        BTN_H = 34
+
+        self.btn_start = QPushButton("▶  开始翻译")
+        self.btn_start.setStyleSheet(self._btn_css("#2ea043", "#3fb950"))
+        self.btn_start.setFixedHeight(BTN_H)
         self.btn_start.clicked.connect(self._toggle)
 
-        self.btn_hide = QPushButton("👁 隐藏")
-        self.btn_hide.setStyleSheet(self._btn_css("#444", "#555"))
+        self.btn_hide = QPushButton("隐藏")
+        self.btn_hide.setStyleSheet(self._ghost_css())
+        self.btn_hide.setFixedSize(52, BTN_H)
         self.btn_hide.clicked.connect(self._toggle_visibility)
 
-        self.btn_clear = QPushButton("⟳ 缓存")
-        self.btn_clear.setStyleSheet(self._btn_css("#444", "#555"))
+        self.btn_clear = QPushButton("⟳")
+        self.btn_clear.setToolTip("清空翻译缓存")
+        self.btn_clear.setStyleSheet(self._ghost_css())
+        self.btn_clear.setFixedSize(34, BTN_H)
         self.btn_clear.clicked.connect(self._clear_cache)
 
         self.btn_close = QPushButton("✕")
-        self.btn_close.setStyleSheet(self._btn_css("#661111", "#882222"))
-        self.btn_close.setFixedWidth(34)
+        self.btn_close.setToolTip("退出程序")
+        self.btn_close.setStyleSheet(
+            "QPushButton{background:rgba(218,54,51,0.15);color:#f85149;"
+            "border:1px solid rgba(218,54,51,0.40);border-radius:5px;"
+            "font-size:12px;font-weight:600;}"
+            "QPushButton:hover{background:rgba(218,54,51,0.32);}")
+        self.btn_close.setFixedSize(34, BTN_H)
         self.btn_close.clicked.connect(self._cleanup_and_exit)
 
-        r4.addWidget(self.btn_start); r4.addWidget(self.btn_hide)
-        r4.addWidget(self.btn_clear); r4.addWidget(self.btn_close)
+        r4.addWidget(self.btn_start, 1)
+        r4.addWidget(self.btn_hide)
+        r4.addWidget(self.btn_clear)
+        r4.addWidget(self.btn_close)
         lay.addLayout(r4)
 
-        self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet("color:#888;font-size:11px;background:transparent;")
+        # ── 状态栏 ──
+        lay.addSpacing(2)
+        self.status_label = QLabel("●  就绪")
+        self.status_label.setStyleSheet(self._status_css("idle"))
         lay.addWidget(self.status_label)
 
-        self.setFixedSize(400, 232)
-        self.setStyleSheet("""
-            QWidget{background:#1a1a1a;border:1px solid #333;border-radius:10px;}
-            QLabel{background:transparent;}
-        """)
+        self.setFixedSize(400, 268)
+        self.setStyleSheet(
+            "ControlPanel{background:#161b22;border:1px solid #30363d;border-radius:8px;}"
+            "QWidget{color:#e6edf3;font-family:'Microsoft YaHei';}"
+            "QLabel{background:transparent;}")
+        # 居中显示，避免出现在屏幕外或被遮
         scr = QApplication.primaryScreen().geometry()
-        self.move(scr.width() - 440, 60)
+        self.move(scr.center().x() - 200, scr.center().y() - 134)
+
+    @staticmethod
+    def _key_css():
+        return ("color:#8b949e;font-size:11px;background:transparent;")
+
+    @staticmethod
+    def _status_css(kind="idle"):
+        colors = {"idle": "#8b949e", "live": "#2ea043", "error": "#f85149"}
+        return ("color:%s;font-size:10px;font-family:Consolas,monospace;"
+                "border-top:1px solid #30363d;padding-top:8px;background:transparent;"
+                % colors.get(kind, "#8b949e"))
+
+    @staticmethod
+    def _ghost_css():
+        return ("QPushButton{background:#1c2333;color:#e6edf3;"
+                "border:1px solid #30363d;border-radius:5px;"
+                "font-size:11px;font-weight:600;padding:0 10px;}"
+                "QPushButton:hover{background:#252c38;border-color:#484f58;}")
+
+    def _setup_tray(self):
+        """系统托盘：左键点 = 显示/隐藏面板，右键 = 菜单退出。"""
+        icon = QIcon(resource_path("app.ico"))
+        if icon.isNull() or not icon.availableSizes():
+            pm = QPixmap(32, 32)
+            pm.fill(QColor("#2ea043"))
+            p = QPainter(pm)
+            p.setPen(QColor("#ffffff"))
+            p.setFont(QFont("Microsoft YaHei", 16, QFont.Bold))
+            p.drawText(pm.rect(), Qt.AlignCenter, "译")
+            p.end()
+            icon = QIcon(pm)
+        self.tray = QSystemTrayIcon(icon, self)
+        self.tray.setToolTip("屏幕翻译器 — 独立版")
+        menu = QMenu()
+        menu.setStyleSheet(
+            "QMenu{background:#161b22;color:#e6edf3;border:1px solid #30363d;"
+            "border-radius:6px;padding:4px;font-size:11px;}"
+            "QMenu::item{padding:6px 18px;border-radius:4px;}"
+            "QMenu::item:selected{background:#1c2333;}"
+            "QMenu::separator{height:1px;background:#30363d;margin:4px 6px;}")
+        act_show = QAction("显示面板", self)
+        act_show.triggered.connect(self._show_panel)
+        act_quit = QAction("退出", self)
+        act_quit.triggered.connect(self._cleanup_and_exit)
+        menu.addAction(act_show)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray)
+        self.tray.show()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        apply_dark_titlebar(self.winId())
+
+    def _setup_hotkeys(self):
+        """注册全局热键 —— 面板失去焦点（例如在打游戏）时依然能控制。"""
+        self.hotkeys = HotkeyFilter()
+        self.hotkeys.triggered.connect(self._on_hotkey)
+        QApplication.instance().installNativeEventFilter(self.hotkeys)
+        ok, failed = self.hotkeys.register_all()
+        self._hotkey_report = (ok, failed)
+        if failed:
+            print("⚠ 以下全局热键被其他程序占用: %s" % "；".join(failed))
+
+    def _on_hotkey(self, name):
+        if name == "toggle":
+            self._toggle()
+        elif name == "hide":
+            self._toggle_visibility()
+        elif name == "quit":
+            self._cleanup_and_exit()
+
+    def _show_panel(self):
+        self.showNormal(); self.raise_(); self.activateWindow()
+
+    def _on_tray(self, reason):
+        if reason == QSystemTrayIcon.Trigger:  # 左键
+            if self.isVisible():
+                self.hide()
+            else:
+                self._show_panel()
+
+    def closeEvent(self, e):
+        # 点 ✕ 不退出，只最小化到托盘；真要退走托盘菜单
+        e.ignore()
+        self.hide()
+        self.tray.showMessage("屏幕翻译器", "已最小化到托盘，右键图标退出",
+                              QSystemTrayIcon.Information, 1500)
 
     @staticmethod
     def _combo_css():
-        return ("QComboBox{background:#2a2a2a;color:#fff;border:1px solid #555;"
-                "padding:4px 8px;border-radius:4px;min-width:130px;}"
-                "QComboBox::drop-down{border:none;}"
-                "QComboBox QAbstractItemView{background:#2a2a2a;color:#fff;"
-                "selection-background-color:#0066aa;}")
+        arrow = combo_arrow_path()
+        return (
+            "QComboBox{background:#1c2333;color:#e6edf3;border:1px solid #30363d;"
+            "border-radius:5px;padding:4px 8px;font-size:11px;"
+            "font-family:Consolas,'Microsoft YaHei',monospace;}"
+            "QComboBox:hover{border-color:#484f58;background:#252c38;}"
+            "QComboBox:focus{border-color:#2ea043;}"
+            "QComboBox:disabled{color:#6e7681;background:#161b22;}"
+            "QComboBox::drop-down{border:none;width:18px;}"
+            "QComboBox::down-arrow{image:url(%s);width:10px;height:6px;}"
+            "QComboBox QAbstractItemView{background:#1c2333;color:#e6edf3;"
+            "border:1px solid #30363d;border-radius:5px;outline:none;"
+            "selection-background-color:#2ea043;selection-color:#ffffff;"
+            "padding:3px;}"
+        ) % arrow
 
     @staticmethod
     def _btn_css(bg, hover):
@@ -654,27 +1281,30 @@ class ControlPanel(QWidget):
         pixel = bool(self.mode_combo.currentData())
 
         self.worker.configure((geo.x(), geo.y(), geo.width(), geo.height()),
-                              src, tgt, pixel)
+                              src, tgt, pixel, interval=self.interval_slider.value())
         self.worker.start()
-        self.btn_start.setText("⏹ 停止")
-        self.btn_start.setStyleSheet(self._btn_css("#663300", "#884400"))
+        self.btn_start.setText("⏹  停止")
+        self.btn_start.setStyleSheet(self._btn_css("#9e6a03", "#bb8009"))
         self.lang_combo.setEnabled(False)
         self.mode_combo.setEnabled(False)
-        self.status_label.setText("翻译中…")
+        self.status_label.setText("●  翻译中…")
+        self.status_label.setStyleSheet(self._status_css("live"))
         self.overlay.set_status("正在翻译…")
 
     def _stop(self):
         self.worker.stop()
         self.worker.wait(5000)
-        self.btn_start.setText("▶ 开始翻译")
-        self.btn_start.setStyleSheet(self._btn_css("#006633", "#008844"))
+        self.btn_start.setText("▶  开始翻译")
+        self.btn_start.setStyleSheet(self._btn_css("#2ea043", "#3fb950"))
         self.lang_combo.setEnabled(True)
         self.mode_combo.setEnabled(True)
-        self.status_label.setText("已停止")
+        self.status_label.setText("●  已停止")
+        self.status_label.setStyleSheet(self._status_css("idle"))
 
     def _clear_cache(self):
         self.worker.translator.clear_cache()
-        self.status_label.setText("缓存已清空")
+        self.status_label.setText("●  缓存已清空")
+        self.status_label.setStyleSheet(self._status_css("idle"))
 
     def _on_blocks(self, blocks):
         self.overlay.set_blocks(blocks)
@@ -683,10 +1313,12 @@ class ControlPanel(QWidget):
         self.overlay.set_plain(text)
 
     def _on_status(self, msg):
-        self.status_label.setText("%s · %s" % (time.strftime("%H:%M:%S"), msg))
+        self.status_label.setText("●  %s · %s" % (time.strftime("%H:%M:%S"), msg))
+        self.status_label.setStyleSheet(self._status_css("live"))
 
     def _on_error(self, msg):
-        self.status_label.setText("⚠ " + msg)
+        self.status_label.setText("▲  " + msg)
+        self.status_label.setStyleSheet(self._status_css("error"))
         self.overlay.set_status("⚠ " + msg)
 
     def _on_region_changed(self):
@@ -696,26 +1328,42 @@ class ControlPanel(QWidget):
             key = self.lang_combo.currentData()
             src, tgt = key.split("→")
             self.worker.configure((geo.x(), geo.y(), geo.width(), geo.height()),
-                                  src, tgt, bool(self.mode_combo.currentData()))
+                                  src, tgt, bool(self.mode_combo.currentData()),
+                                  interval=self.interval_slider.value())
+
+    def _on_interval_changed(self, v):
+        """滑块调整立即生效（运行中也生效），不必重启翻译。"""
+        self.interval_label.setText("%ds" % v)
+        if self.worker.isRunning():
+            self.worker.configure(self.worker._region, self.worker._source,
+                                  self.worker._target, self.worker._pixel_mode,
+                                  interval=v)
+            self.worker._last_hash = None
 
     def _toggle_visibility(self):
         if self.capture_region.isVisible():
             self.capture_region.hide()
             self.overlay.hide()
-            self.btn_hide.setText("👁 显示")
+            self.btn_hide.setText("显示")
         else:
             self.capture_region.show()
             self.overlay.show()
-            self.btn_hide.setText("👁 隐藏")
+            self.btn_hide.setText("隐藏")
 
     def _cleanup_and_exit(self):
         self._stop()
+        try:
+            self.hotkeys.unregister_all()
+            QApplication.instance().removeNativeEventFilter(self.hotkeys)
+        except Exception:
+            pass
         try:
             self.worker.capture.close()
         except Exception:
             pass
         self.capture_region.close()
         self.overlay.close()
+        self.tray.hide()
         QApplication.quit()
 
 
@@ -738,6 +1386,135 @@ def cli_test(text):
     return 0
 
 
+def selftest():
+    """
+    打包后自检 —— 让 exe **自己**验证完整链路。
+
+    为什么需要它：源码测试全绿不代表 exe 里是同一份代码。PyInstaller 的
+    归档是压缩过的，外面对 exe grep 字符串得不到可信结论；时间戳只能说明
+    "打了包"，不能说明"打进的是新代码"。唯一可信的做法是让 exe 自己跑一遍。
+
+    ⚠️ 打包后的 exe 是 console=False（runw.exe 引导器），**没有 stdout**。
+       所以结果必须同时写进文件，否则窗口程序跑 --selftest 什么都看不到。
+       文件落在 exe 同目录的 selftest.log。
+
+    检查项（全部真实执行，不模拟）：
+      1. 打包资源：app.ico 是否在解包目录里（托盘图标依赖它）
+      2. 配置路径：HERE 是否为 exe 所在目录、能否读到 .env 里的 key
+      3. 解析器：那段实测坏 JSON 能否还原 5 行（漏行 bug 的回归）
+      4. 视觉链路：真发一次请求，能否返回 5/5 块
+      5. 墨迹校正：坏坐标能否被拉回真值框
+    """
+    lines = []
+
+    def say(msg=""):
+        # 打包后的 exe 有两层输出坑（都实测踩过）：
+        #   1. console=False → sys.stdout 可能是 None，print() 抛 AttributeError；
+        #   2. stdout 被重定向时编码是 GBK（中文 Windows 默认），
+        #      '✓' 这类字符抛 UnicodeEncodeError。
+        # 两种都会在写文件**之前**崩掉，导致 selftest.log 根本不生成。
+        lines.append(msg)
+        try:
+            if sys.stdout is not None:
+                print(msg)
+        except Exception:
+            try:
+                sys.stdout.write(msg.encode("utf-8", "replace").decode("utf-8", "replace") + "\n")
+            except Exception:
+                pass
+
+    ok = True
+
+    say("=== 1. 打包资源 ===")
+    ico = resource_path("app.ico")
+    have_ico = os.path.exists(ico)
+    say("  app.ico: %s (%s)" % (ico, "存在 %d 字节" % os.path.getsize(ico) if have_ico else "缺失 → 托盘会退化"))
+    ok = ok and have_ico
+
+    say("\n=== 2. 配置路径 ===")
+    say("  frozen=%s" % getattr(sys, "frozen", False))
+    say("  HERE=%s" % cfg_mod.HERE)
+    say("  .env 候选=%s" % cfg_mod._env_candidates())
+    cfg = cfg_mod.load_config()
+    say("  api_key 长度=%d, model=%s, style=%s"
+        % (len(cfg["api_key"]), cfg["model"], cfg["api_style"]))
+    if not cfg["api_key"]:
+        say("  ✗ 读不到 key —— 打包后配置路径有问题")
+        ok = False
+
+    say("\n=== 3. 解析器（实测坏 JSON 回归）===")
+    broken = ('[{"t":"Control Panel","x":39","y":52,"w":198,"h":34,"zh":"控制面板"},'
+              '{"t":"Display brightness","x":39","y":289,"w":240,"h":32,"zh":"显示亮度"},'
+              '{"t":"Network connection","x":39,"y":466,"w":249,"h":32,"zh":"网络连接"},'
+              '{"t":"Automatic backup","x":39","y":647,"w":232,"h":32,"zh":"自动备份"},'
+              '{"t":"Sign out of account","x":39","y":827,"w":246,"h":32,"zh":"退出账户"}]')
+    boxes = engine_mod.parse_json_boxes(broken)
+    say("  坏 JSON → %d/5 行 %s" % (len(boxes), "✓" if len(boxes) == 5 else "✗"))
+    ok = ok and len(boxes) == 5
+
+    say("\n=== 4. 视觉链路（真实 API）===")
+    if not cfg["api_key"]:
+        say("  跳过（无 key）")
+        _write_selftest_log(lines, ok)
+        return 2
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        W, H = 760, 440
+        img = Image.new("RGB", (W, H), (245, 246, 248))
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 0, W, 56], fill=(38, 42, 54))
+        try:
+            ft = ImageFont.truetype("C:/Windows/Fonts/segoeui.ttf", 26)
+            fb = ImageFont.truetype("C:/Windows/Fonts/segoeui.ttf", 22)
+        except Exception:
+            ft = fb = ImageFont.load_default()
+        d.text((30, 14), "Control Panel", font=ft, fill=(255, 255, 255))
+        for i, t in enumerate(["Display brightness", "Network connection",
+                               "Automatic backup", "Sign out of account"]):
+            d.text((30, 122 + i * 80), t, font=fb, fill=(20, 20, 26))
+
+        tr = engine_mod.LLMTranslator(cfg["api_key"], cfg["base_url"],
+                                      cfg["model"], cfg["api_style"])
+        b64 = to_jpeg_b64(img)
+        got = tr.translate_image_boxes(b64, cfg["source_lang"], cfg["target_lang"])
+        say("  识别 %d/5 行 %s" % (len(got), "✓" if len(got) == 5 else "⚠ 漏行"))
+        for b in got:
+            say("    %-22r → %r" % (b.get("t"), b.get("zh")))
+        ok = ok and len(got) == 5
+
+        say("\n=== 5. 墨迹校正 ===")
+        blocks = boxes_to_blocks(got, 0, 0, W, H, img=img)
+        ref = refine_blocks_with_ink(blocks, img, 0, 0, W, H)
+        say("  %-12s %-22s %-22s" % ("译文", "校正前", "校正后"))
+        for a, b in zip(blocks, ref):
+            say("  %-12s %-22s %-22s"
+                % (a.text, (a.x, a.y, a.w, a.h), (b.x, b.y, b.w, b.h)))
+        hs = sorted(b.h for b in ref)
+        med = hs[len(hs) // 2] if hs else 0
+        tall = sum(1 for b in ref if b.h >= med * 0.8)
+        say("  高度中位数=%d，达标块数=%d/%d" % (med, tall, len(ref)))
+        ok = ok and tall >= max(1, int(len(ref) * 0.8))
+    except Exception as e:
+        say("  ✗ %s: %s" % (type(e).__name__, e))
+        ok = False
+
+    say("\n自检结论: %s" % ("✓ 全部通过" if ok else "✗ 有项目未通过"))
+    _write_selftest_log(lines, ok)
+    return 0 if ok else 1
+
+
+def _write_selftest_log(lines, ok):
+    """把自检结果落盘（console=False 的 exe 没有 stdout，只能靠文件）。"""
+    try:
+        path = os.path.join(cfg_mod.HERE, "selftest.log")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+            f.write("\n")
+        print("自检日志: %s" % path)
+    except Exception:
+        pass
+
+
 # ═══════════════════════════════════════════════════════════════
 #  启动
 # ═══════════════════════════════════════════════════════════════
@@ -745,6 +1522,8 @@ def cli_test(text):
 def main():
     ap = argparse.ArgumentParser(description="屏幕翻译器（独立版）")
     ap.add_argument("--cli", metavar="TEXT", help="命令行翻译自测")
+    ap.add_argument("--selftest", action="store_true",
+                    help="打包后自检：资源/配置/解析器/视觉/墨迹校正")
     ap.add_argument("--set-key", metavar="KEY", help="把 API Key 写进本目录 .env")
     ap.add_argument("--base-url", metavar="URL", help="设置 API Base URL")
     ap.add_argument("--model", metavar="MODEL", help="设置模型名")
@@ -767,6 +1546,9 @@ def main():
     if args.cli:
         return cli_test(args.cli)
 
+    if args.selftest:
+        return selftest()
+
     dpi_mode = enable_dpi_awareness()
     cfg = cfg_mod.load_config()
 
@@ -786,7 +1568,11 @@ def main():
 
     panel = ControlPanel(translator)
     panel.show()
+    ok, failed = getattr(panel, "_hotkey_report", ([], []))
     print("屏幕翻译器已启动 (DPI: %s, 模型: %s)" % (dpi_mode, cfg["model"]))
+    print("全局热键: %s" % ("、".join(ok) if ok else "无"))
+    if failed:
+        print("  以下热键被占用（可改用面板内 Ctrl+S/H/Q）: %s" % "、".join(failed))
     sys.exit(app.exec_())
 
 

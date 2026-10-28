@@ -65,10 +65,25 @@ def build_boxes_prompt(source, target):
 
     坐标用 0-1000 归一化（相对图片宽高），避免模型输出像素数不准确。
 
-    ⚠️ 关键：必须让模型忽略图里已有的译文，否则第二轮它会把上一轮
-    贴上去的译文当成原文再翻一遍，产生幻觉行（实测出现过）。
+    ⚠️ 两个致命坑（都实测踩过）：
+
+    1. **规则 4 的「只识别 X 原文」必须填源语言，不能填目标语言。**
+       早先 %s 顺序错位传成了 target，默认 target=zh 时提示词变成
+       「只识别中文原文」—— 英文界面里当然没有中文原文，模型就干净地
+       返回 [] 或只挑出零星几块。表现是「同一张图每次返回 0~5 块」，
+       一直被误当成模型能力上限。修好后同一张英文界面稳定返回全部行。
+
+    2. **必须让模型忽略图里已有的译文**，否则第二轮会把上一轮贴上去的
+       译文当成原文再翻一遍，产生幻觉行（实测出现过）。
+
+    source="auto" 时不能写「只识别（自动判断语种的）原文」这种病句，
+    改为明确说明「识别所有可翻译的原语言文字」。
     """
     tname = lang_name(target)
+    if source == "auto":
+        src_rule = "识别图中所有**可翻译的原语言**文字（不要只挑某一种语言）"
+    else:
+        src_rule = "只需识别 %s 原文" % lang_name(source)
     return (
         "你是屏幕翻译引擎。识别图片中所有%s文字，翻译成%s，"
         "并给出每条文字在图中的位置。\n"
@@ -85,13 +100,13 @@ def build_boxes_prompt(source, target):
         "要求：\n"
         "  1. 一行文字一个对象，不要合并相邻行\n"
         "  2. 按从上到下、从左到右的顺序排列\n"
-        "  3. 必须把图里**每一行**原文都列出来，不要漏\n"
-        "  4. **只识别%s原文**。如果图里已经出现%s文字（可能是之前翻译过的），"
+        "  3. 必须把图里**每一行**可翻译的文字都列出来，不要漏\n"
+        "  4. %s。如果图里已经出现%s文字（可能是之前翻译过的），"
         "那是译文不是原文，跳过它们，不要重复翻译\n"
         "  5. 坐标尽量准确，我会用它在屏幕上原位贴字\n"
         "  6. 最多输出 40 条\n"
-        "如果图片中没有可翻译的文字，输出：[]\n"
-        % (lang_name(source), tname, tname, tname)
+        "只有图片里确实没有任何可翻译文字时，才输出：[]\n"
+        % (lang_name(source), tname, src_rule, tname)
     )
 
 
@@ -99,8 +114,49 @@ def build_boxes_prompt(source, target):
 #  解析
 # ═══════════════════════════════════════════════════════════════
 
+_NUM_QUOTE_FIX = re.compile(r'"(x|y|w|h)"\s*:\s*"?(-?\d+(?:\.\d+)?)"(?=\s*[,}])')
+_QUOTE_BEFORE_KEY = re.compile(r'"\s*,\s*"')
+_STRAY_QUOTE_AFTER_NUM = re.compile(r'("(?:x|y|w|h)"\s*:\s*-?\d+(?:\.\d+)?)"(\s*[,\}])')
+
+
+def _repair_json(text):
+    """
+    修补模型产出的小型 JSON 语法错误。
+
+    ⚠️ 这是「漏行」的真正根因（实测确认，不是模型能力问题）：
+       模型把 "x":39,"y":52 写成 "x":39","y":52 —— 数字后面多一个引号。
+       整段因此不是合法 JSON，标准 json.loads 直接失败；
+       退回的 `\\{[^{}]*\\}` 逐对象兜底又很脆（正则遇到嵌套/转义就漏），
+       最终表现就是「同一张图每次返回 0~5 块」「只识别到 1/5 行」。
+       而原始响应里其实 5 行全都在。
+
+    处理三类实测见过的破坏：
+      1. `"x":39"`        → 数字尾随多余引号
+      2. `",` + `"y"`     → 值结束引号后又接逗号引号（同上，另一种断法）
+      3. 数值被写成 `"39"` → 字符串数字（下游 float() 能转，不必改）
+    """
+    if not text:
+        return text
+    # 数字后面紧跟的孤立引号（后面必须是 , 或 } 才算）
+    text = _STRAY_QUOTE_AFTER_NUM.sub(r"\1\2", text)
+    # "x":39" 这种：引号在数字后、逗号前
+    text = _NUM_QUOTE_FIX.sub(r'"\1":\2"', text)
+    text = _NUM_QUOTE_FIX.sub(r'"\1":\2', text)
+    # 引号紧贴逗号再接键名  "39","y" → 39,"y"
+    text = _QUOTE_BEFORE_KEY.sub('", "', text)
+    return text
+
+
 def parse_json_boxes(raw):
-    """从模型输出里抽出 JSON 数组，容忍 markdown 包裹和前后废话。"""
+    """
+    从模型输出里抽出 JSON 数组，容忍 markdown 包裹、前后废话和轻微语法损坏。
+
+    解析顺序（逐级降级，每级都记录救回了多少条）：
+      1. 原样 json.loads
+      2. _repair_json 修补后 json.loads
+      3. 逐对象 `\\{[^{}]*\\}` 兜底
+      4. 逐对象 + 修补
+    """
     if not raw:
         return []
     text = raw.strip()
@@ -110,21 +166,36 @@ def parse_json_boxes(raw):
     if m:
         text = m.group(1).strip()
 
-    # 找第一个 [ 和最后一个 ]
     i = text.find("[")
     j = text.rfind("]")
     if i < 0 or j <= i:
         return []
-    try:
-        arr = json.loads(text[i:j + 1], object_pairs_hook=_no_dup)
-    except Exception:
-        # 逐个对象兜底解析
-        arr = []
-        for m in re.finditer(r"\{[^{}]*\}", text[i:j + 1]):
-            try:
-                arr.append(json.loads(m.group(0), object_pairs_hook=_no_dup))
-            except Exception:
-                pass
+    body = text[i:j + 1]
+
+    arr = None
+    for attempt in (body, _repair_json(body)):
+        try:
+            arr = json.loads(attempt, object_pairs_hook=_no_dup)
+            if isinstance(arr, list) and arr:
+                break
+        except Exception:
+            arr = None
+
+    if not isinstance(arr, list) or not arr:
+        # 逐对象兜底（原样 + 修补各扫一遍，取条数多的）
+        cand = []
+        for chunk in (body, _repair_json(body)):
+            got = []
+            for mm in re.finditer(r"\{[^{}]*\}", chunk):
+                for variant in (mm.group(0), _repair_json(mm.group(0))):
+                    try:
+                        got.append(json.loads(variant, object_pairs_hook=_no_dup))
+                        break
+                    except Exception:
+                        continue
+            if len(got) > len(cand):
+                cand = got
+        arr = cand
     if not isinstance(arr, list):
         return []
 
@@ -240,11 +311,38 @@ class LLMTranslator:
         raw = self._call(prompt, img_b64, tag=self._img_tag(img_b64, "lines", source, target))
         return parse_lines(raw)
 
-    def translate_image_boxes(self, img_b64, source="auto", target="zh"):
-        """像素级：返回 [{t, zh, x, y, w, h}]，坐标 0-1000 归一化。"""
+    def translate_image_boxes(self, img_b64, source="auto", target="zh", retries=2):
+        """
+        像素级：返回 [{t, zh, x, y, w, h}]，坐标 0-1000 归一化。
+
+        实测模型漏行严重且不稳定：同一张 5 行文字的图，多次调用返回
+        1~5 块不等（出现过只返回 1 块）。这是模型侧问题，不是渲染问题。
+
+        ⚠️ 早先的重试有缺陷：`if best: break` —— 只要拿到**任意**块就停，
+           返回 1 块时根本不重试。正确做法是按**块数**判断：块数偏少
+           （< MIN_BOXES）就继续重试，最后取块数最多的结果。
+
+        代价：块数少时会多打几次 API（每张图每次变化最多 retries+1 次）。
+        但漏行会让整行没有译文 —— 用户看到的是「翻译漏了」，比多花
+        一点额度严重得多。缓存仍按图片内容哈希，同一帧不会重复计费。
+        """
+        MIN_BOXES = 3     # 少于这个块数认为可能漏行，值得重试
         prompt = build_boxes_prompt(source, target)
-        raw = self._call(prompt, img_b64, tag=self._img_tag(img_b64, "boxes", source, target))
-        return parse_json_boxes(raw)
+        tag = self._img_tag(img_b64, "boxes", source, target)
+        best = []
+        for attempt in range(retries + 1):
+            raw = self._call(prompt, img_b64, tag=tag)
+            boxes = parse_json_boxes(raw)
+            if len(boxes) > len(best):
+                best = boxes
+            if len(best) >= MIN_BOXES:
+                break
+            # 块数偏少：清缓存强制重新请求（否则下一次直接命中同一份结果）
+            with self._lock:
+                self._cache.pop(tag, None)
+            if attempt < retries:
+                time.sleep(1.0)
+        return best
 
     @staticmethod
     def _img_tag(img_b64, mode, source, target):

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>屏幕翻译器 — UI 设计稿</title>
+<style>
+  :root{
+    --bg:#0d1117; --surface:#161b22; --surface-2:#1c2333;
+    --fg:#e6edf3; --muted:#8b949e; --border:#30363d;
+    --accent:#2ea043; --accent-hover:#3fb950;
+    --danger:#da3633; --warn:#d29922;
+    --cyan:#39d353; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#010409; color:var(--fg);
+    font-family:-apple-system,'Segoe UI',system-ui,sans-serif;
+    padding:60px; display:flex; gap:48px; flex-wrap:wrap; align-items:flex-start;
+  }
+  .label{
+    font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:12px; font-family:var(--mono);
+  }
+
+  /* ── 主控制面板 400×260 ── */
+  .panel{
+    width:400px; background:var(--surface);
+    border:1px solid var(--border); border-radius:8px;
+    box-shadow:0 8px 24px rgba(1,4,9,.85);
+    overflow:hidden;
+  }
+  .titlebar{
+    height:34px; background:#010409; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; padding:0 12px; gap:8px;
+  }
+  .titlebar .dot{width:9px;height:9px;border-radius:50%}
+  .titlebar .title{
+    font-size:12px; color:var(--muted); flex:1; font-family:var(--mono);
+  }
+  .titlebar .winbtns{display:flex;gap:14px;color:#6e7681;font-size:11px}
+
+  .panel-body{padding:16px}
+
+  .head{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+  .head h1{font-size:14px;font-weight:600;letter-spacing:-.01em}
+  .pill{
+    font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:10px;
+    background:rgba(46,160,67,.14);color:var(--accent);
+    border:1px solid rgba(46,160,67,.3);letter-spacing:.04em;
+  }
+
+  .row{display:flex;align-items:center;gap:10px;margin-bottom:12px;height:26px}
+  .row .k{font-size:11px;color:var(--muted);width:70px;flex-shrink:0}
+  .row .v{font-size:11px;color:var(--fg);font-family:var(--mono);margin-left:auto}
+
+  select,.fake-select{
+    flex:1;background:var(--surface-2);color:var(--fg);
+    border:1px solid var(--border);border-radius:5px;
+    padding:5px 8px;font-size:11px;font-family:var(--mono);
+  }
+
+  input[type=range]{flex:1;accent-color:var(--accent);height:4px}
+
+  .btns{display:flex;gap:6px;margin-top:16px}
+  .btn{
+    border:none;border-radius:5px;font-size:11px;font-weight:600;
+    padding:8px 10px;cursor:pointer;display:flex;align-items:center;
+    justify-content:center;gap:5px;white-space:nowrap;
+  }
+  .btn-primary{background:var(--accent);color:#fff;flex:1}
+  .btn-primary:hover{background:var(--accent-hover)}
+  .btn-ghost{background:var(--surface-2);color:var(--fg);border:1px solid var(--border)}
+  .btn-ghost:hover{background:#252c38}
+  .btn-danger{background:rgba(218,54,51,.15);color:#f85149;border:1px solid rgba(218,54,51,.4);width:34px}
+
+  .statusbar{
+    margin-top:14px;padding-top:10px;border-top:1px solid var(--border);
+    display:flex;align-items:center;gap:6px;
+  }
+  .led{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+  .led.pulse{animation:p 1.6s infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
+  .statusbar span{font-size:10px;color:var(--muted);font-family:var(--mono)}
+
+  /* ── 译文覆盖层示意 ── */
+  .overlay-demo{
+    width:420px;background:#fff;border:1px solid var(--border);
+    border-radius:8px;padding:20px;position:relative;
+    box-shadow:0 8px 24px rgba(1,4,9,.85);
+  }
+  .en{font-size:13px;color:#8a8a8a;line-height:2.1;font-family:var(--mono)}
+  .zh{
+    position:absolute;font-size:13px;color:#c0392b;font-weight:500;
+    background:rgba(255,255,255,.72);padding:0 2px;line-height:1.45;
+    border-left:2px solid rgba(192,57,43,.5);
+  }
+
+  /* ── 托盘菜单 ── */
+  .tray{
+    width:150px;background:#21262d;border:1px solid var(--border);
+    border-radius:6px;padding:4px;box-shadow:0 8px 20px rgba(1,4,9,.9);
+  }
+  .tray div{
+    padding:6px 10px;font-size:11px;border-radius:4px;color:var(--fg);
+  }
+  .tray div:hover{background:var(--surface-2)}
+  .tray .sep{height:1px;background:var(--border);margin:4px 0;padding:0}
+</style>
+</head>
+<body>
+
+<div>
+  <div class="label">Control panel — 400×260</div>
+  <div class="panel">
+    <div class="titlebar">
+      <div class="dot" style="background:#f85149"></div>
+      <div class="title">屏幕翻译器</div>
+      <div class="winbtns"><span>&minus;</span><span>&square;</span><span>&times;</span></div>
+    </div>
+    <div class="panel-body">
+      <div class="head">
+        <h1>屏幕翻译器</h1>
+        <span class="pill">LLM VISION</span>
+      </div>
+
+      <div class="row">
+        <span class="k">翻译方向</span>
+        <select><option>自动 → 中文</option><option>英文 → 中文</option></select>
+      </div>
+
+      <div class="row">
+        <span class="k">刷新间隔</span>
+        <input type="range" min="1" max="10" value="3">
+        <span class="v">3s</span>
+      </div>
+
+      <div class="row">
+        <span class="k">贴字模式</span>
+        <select><option>像素级 · 原位贴字</option><option>整图翻译</option></select>
+      </div>
+
+      <div class="btns">
+        <button class="btn btn-primary">▶ 开始翻译</button>
+        <button class="btn btn-ghost">👁 隐藏</button>
+        <button class="btn btn-ghost">⟳ 缓存</button>
+        <button class="btn btn-danger">&times;</button>
+      </div>
+
+      <div class="statusbar">
+        <div class="led pulse"></div>
+        <span>就绪 · MiniMax-M3 · 640×420</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="label">Overlay result — 原位贴字</div>
+  <div class="overlay-demo">
+    <div class="en">
+      Settings<br>
+      Account &amp; privacy<br>
+      Manage your profile<br>
+      Sign out
+    </div>
+    <div class="zh" style="top:22px;left:22px">设置</div>
+    <div class="zh" style="top:49px;left:22px">账户与隐私</div>
+    <div class="zh" style="top:76px;left:22px">管理你的个人资料</div>
+    <div class="zh" style="top:103px;left:22px">退出登录</div>
+  </div>
+</div>
+
+<div>
+  <div class="label">Tray menu</div>
+  <div class="tray">
+    <div>显示面板</div>
+    <div class="sep"></div>
+    <div>退出</div>
+  </div>
+</div>
+
+</body>
+</html>
