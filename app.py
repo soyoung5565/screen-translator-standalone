@@ -35,6 +35,7 @@ from PIL import Image
 
 import config as cfg_mod
 import engine as engine_mod
+from ui_components import SegmentedControl, StatusDot
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1003,136 +1004,263 @@ class ControlPanel(QWidget):
 
     # ── UI ──
     def _setup_ui(self):
-        """UI 按 Open Design tech-utility 方向实现（暗色仪表盘）。"""
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(9)
+        """UI 按 OpenDesign 设计稿实现（tech-utility 暗色仪表盘，400×268）。
 
-        # 统一控件高度，保证标签与输入控件垂直居中一致
-        CTL_H = 30
+        结构（自上而下）：
+          状态带 40px   LED + 状态词 + LLM VISION 徽标 + 区域尺寸 + 清缓存 + 隐藏
+          身体   212px  翻译方向 36 / 刷新间隔 32 / 贴字模式 32 / 模式说明 16
+                         / 主按钮 36 / 底栏 28
+        垂直预算 = 40 + 8 + 36 + 8 + 32 + 8 + 32 + 4 + 16 + 4 + 36 + 8 + 28 + 8 = 268
+        """
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── 头部：标题 + 模式徽标 ──
-        head = QHBoxLayout()
-        head.setSpacing(7)
-        title = QLabel("屏幕翻译器")
-        title.setStyleSheet(
-            "color:#e6edf3;font-size:14px;font-weight:600;"
-            "font-family:'Microsoft YaHei';background:transparent;")
+        # ══ 状态带 40px ══
+        strip = QWidget()
+        strip.setFixedHeight(40)
+        strip.setObjectName("statusStrip")
+        strip_lay = QHBoxLayout(strip)
+        strip_lay.setContentsMargins(16, 0, 16, 0)
+        strip_lay.setSpacing(10)
+
+        self.status_led = StatusDot()
+        self.status_led.set_kind("idle")
+        strip_lay.addWidget(self.status_led)
+
+        self.status_title = QLabel("就绪")
+        self.status_title.setObjectName("statusTitle")
+        strip_lay.addWidget(self.status_title)
+
         badge = QLabel("LLM VISION")
-        badge.setFixedHeight(18)
-        badge.setStyleSheet(
-            "color:#2ea043;font-size:9px;letter-spacing:0.05em;"
-            "font-family:Consolas,monospace;padding:0 7px;border-radius:9px;"
-            "background:rgba(46,160,67,0.14);border:1px solid rgba(46,160,67,0.30);")
-        head.addWidget(title)
-        head.addWidget(badge)
-        head.addStretch()
-        lay.addLayout(head)
+        badge.setObjectName("visionBadge")
+        strip_lay.addWidget(badge)
 
-        # ── 翻译方向 ──
-        r1 = QHBoxLayout(); r1.setSpacing(10)
-        l1 = QLabel("翻译方向"); l1.setFixedSize(62, CTL_H)
-        l1.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        l1.setStyleSheet(self._key_css())
+        strip_lay.addStretch(1)
+
+        self.region_readout = QLabel("—")
+        self.region_readout.setObjectName("regionReadout")
+        strip_lay.addWidget(self.region_readout)
+
+        self.btn_clear = QPushButton("⟳")
+        self.btn_clear.setObjectName("iconBtn")
+        self.btn_clear.setToolTip("清空翻译缓存")
+        self.btn_clear.setFixedSize(22, 22)
+        self.btn_clear.setFocusPolicy(Qt.NoFocus)
+        self.btn_clear.clicked.connect(self._clear_cache)
+        strip_lay.addWidget(self.btn_clear)
+
+        self.btn_hide = QPushButton("隐藏")
+        self.btn_hide.setObjectName("textLink")
+        self.btn_hide.setFocusPolicy(Qt.NoFocus)
+        self.btn_hide.setCursor(Qt.PointingHandCursor)
+        self.btn_hide.clicked.connect(self._toggle_visibility)
+        strip_lay.addWidget(self.btn_hide)
+
+        root.addWidget(strip)
+
+        # ══ 身体 212px ══
+        body = QWidget()
+        body.setObjectName("panelBody")
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(16, 8, 16, 8)
+        lay.setSpacing(0)
+
+        # ── 翻译方向 36px（主选项，比另两行高 4px）──
+        r1 = QHBoxLayout(); r1.setSpacing(12); r1.setContentsMargins(0, 0, 0, 0)
+        l1 = QLabel("翻译方向"); l1.setFixedWidth(64)
+        l1.setObjectName("rowLabel")
         self.lang_combo = QComboBox()
-        self.lang_combo.setFixedHeight(CTL_H)
+        self.lang_combo.setFixedHeight(36)
+        self.lang_combo.setObjectName("langCombo")
         for key, label in LANG_PAIRS:
             self.lang_combo.addItem(label, key)
         self.lang_combo.setStyleSheet(self._combo_css())
         r1.addWidget(l1); r1.addWidget(self.lang_combo, 1)
         lay.addLayout(r1)
+        lay.addSpacing(8)
 
-        # ── 刷新间隔 ──
-        r2 = QHBoxLayout(); r2.setSpacing(10)
-        l2 = QLabel("刷新间隔"); l2.setFixedSize(62, CTL_H)
-        l2.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        l2.setStyleSheet(self._key_css())
+        # ── 刷新间隔 32px ──
+        r2 = QHBoxLayout(); r2.setSpacing(12); r2.setContentsMargins(0, 0, 0, 0)
+        l2 = QLabel("刷新间隔"); l2.setFixedWidth(64)
+        l2.setObjectName("rowLabel")
         self.interval_slider = QSlider(Qt.Horizontal)
-        self.interval_slider.setFixedHeight(CTL_H)
+        self.interval_slider.setFixedHeight(32)
         self.interval_slider.setRange(1, 15)
         self.interval_slider.setValue(3)
-        self.interval_slider.setStyleSheet("""
-            QSlider::groove:horizontal{background:#30363d;height:4px;border-radius:2px;}
-            QSlider::handle:horizontal{background:#2ea043;width:12px;height:12px;
-                margin:-4px 0;border-radius:6px;}
-            QSlider::handle:horizontal:hover{background:#3fb950;}
-            QSlider::sub-page:horizontal{background:#2ea043;border-radius:2px;}
-        """)
-        self.interval_label = QLabel("3s")
-        self.interval_label.setFixedSize(30, CTL_H)
-        self.interval_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.interval_label.setStyleSheet(
-            "color:#e6edf3;font-size:11px;font-family:Consolas,monospace;"
-            "background:transparent;")
+        self.interval_slider.setObjectName("intervalSlider")
+        self.interval_slider.setStyleSheet(self._slider_css())
         self.interval_slider.valueChanged.connect(self._on_interval_changed)
-        r2.addWidget(l2); r2.addWidget(self.interval_slider, 1); r2.addWidget(self.interval_label)
+        # 数值区：两行（数字 + 说明），宽 96 右对齐
+        # 用固定高度 32 的容器 + 两个绝对定位感的行高，避免 QLabel 默认
+        # 撑高把「3秒」和「最快 3 秒一次」叠在一起。
+        val_box = QWidget(); val_box.setFixedWidth(96); val_box.setFixedHeight(32)
+        val_lay = QVBoxLayout(val_box)
+        val_lay.setContentsMargins(0, 0, 0, 0); val_lay.setSpacing(0)
+        self.interval_label = QLabel("3<i>秒</i>")
+        self.interval_label.setObjectName("intervalValue")
+        self.interval_label.setFixedHeight(18)
+        self.interval_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.interval_hint = QLabel("最快 3 秒一次")
+        self.interval_hint.setObjectName("intervalHint")
+        self.interval_hint.setFixedHeight(14)
+        self.interval_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val_lay.addWidget(self.interval_label); val_lay.addWidget(self.interval_hint)
+        r2.addWidget(l2); r2.addWidget(self.interval_slider, 1); r2.addWidget(val_box)
         lay.addLayout(r2)
+        lay.addSpacing(8)
 
-        # ── 贴字模式 ──
-        r3 = QHBoxLayout(); r3.setSpacing(10)
-        l3 = QLabel("贴字模式"); l3.setFixedSize(62, CTL_H)
-        l3.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        l3.setStyleSheet(self._key_css())
-        self.mode_combo = QComboBox()
-        self.mode_combo.setFixedHeight(CTL_H)
-        self.mode_combo.addItem("像素级 · 原位贴字", True)
-        self.mode_combo.addItem("整图翻译", False)
-        self.mode_combo.setStyleSheet(self._combo_css())
-        r3.addWidget(l3); r3.addWidget(self.mode_combo, 1)
+        # ── 贴字模式 32px（分段控件，替代下拉框）──
+        r3 = QHBoxLayout(); r3.setSpacing(12); r3.setContentsMargins(0, 0, 0, 0)
+        l3 = QLabel("贴字模式"); l3.setFixedWidth(64)
+        l3.setObjectName("rowLabel")
+        self.mode_seg = SegmentedControl([
+            ("像素级 · 原位贴字", True),
+            ("整图翻译", False),
+        ])
+        self.mode_seg.setFixedHeight(32)
+        self.mode_seg.setStyleSheet(self._seg_css())
+        r3.addWidget(l3); r3.addWidget(self.mode_seg, 1)
         lay.addLayout(r3)
-
-        # ── 按钮行 ──
         lay.addSpacing(4)
-        r4 = QHBoxLayout(); r4.setSpacing(6)
-        r4.setContentsMargins(0, 0, 0, 0)
-        BTN_H = 34
 
+        # ── 模式说明 16px ──
+        self.mode_hint = QLabel("译文按原文的像素尺寸原位覆盖，原排版不变。")
+        self.mode_hint.setObjectName("modeHint")
+        self.mode_hint.setFixedHeight(16)
+        lay.addWidget(self.mode_hint)
+        lay.addSpacing(4)
+
+        # ── 主按钮 36px（通栏）──
         self.btn_start = QPushButton("▶  开始翻译")
-        self.btn_start.setStyleSheet(self._btn_css("#2ea043", "#3fb950"))
-        self.btn_start.setFixedHeight(BTN_H)
+        self.btn_start.setObjectName("primaryCta")
+        self.btn_start.setFixedHeight(36)
+        self.btn_start.setFocusPolicy(Qt.NoFocus)
+        self.btn_start.setCursor(Qt.PointingHandCursor)
+        self.btn_start.setStyleSheet(self._cta_css(False))
         self.btn_start.clicked.connect(self._toggle)
+        lay.addWidget(self.btn_start)
+        lay.addSpacing(8)
 
-        self.btn_hide = QPushButton("隐藏")
-        self.btn_hide.setStyleSheet(self._ghost_css())
-        self.btn_hide.setFixedSize(52, BTN_H)
-        self.btn_hide.clicked.connect(self._toggle_visibility)
-
-        self.btn_clear = QPushButton("⟳")
-        self.btn_clear.setToolTip("清空翻译缓存")
-        self.btn_clear.setStyleSheet(self._ghost_css())
-        self.btn_clear.setFixedSize(34, BTN_H)
-        self.btn_clear.clicked.connect(self._clear_cache)
-
-        self.btn_close = QPushButton("✕")
+        # ── 底栏 28px ──
+        foot = QWidget(); foot.setFixedHeight(28)
+        foot.setObjectName("panelFoot")
+        foot_lay = QHBoxLayout(foot)
+        foot_lay.setContentsMargins(0, 3, 0, 0)
+        foot_lay.setSpacing(12)
+        self.status_label = QLabel("Ctrl+Alt+S 开始/停止")
+        self.status_label.setObjectName("footReadout")
+        foot_lay.addWidget(self.status_label, 1)
+        self.btn_retry = QPushButton("重试")
+        self.btn_retry.setObjectName("retryBtn")
+        self.btn_retry.setFixedHeight(20)
+        self.btn_retry.setFocusPolicy(Qt.NoFocus)
+        self.btn_retry.setCursor(Qt.PointingHandCursor)
+        self.btn_retry.setVisible(False)
+        self.btn_retry.clicked.connect(self._toggle)
+        foot_lay.addWidget(self.btn_retry)
+        self.btn_close = QPushButton("退出")
+        self.btn_close.setObjectName("quitLink")
+        self.btn_close.setFocusPolicy(Qt.NoFocus)
+        self.btn_close.setCursor(Qt.PointingHandCursor)
         self.btn_close.setToolTip("退出程序")
-        self.btn_close.setStyleSheet(
-            "QPushButton{background:rgba(218,54,51,0.15);color:#f85149;"
-            "border:1px solid rgba(218,54,51,0.40);border-radius:5px;"
-            "font-size:12px;font-weight:600;}"
-            "QPushButton:hover{background:rgba(218,54,51,0.32);}")
-        self.btn_close.setFixedSize(34, BTN_H)
         self.btn_close.clicked.connect(self._cleanup_and_exit)
+        foot_lay.addWidget(self.btn_close)
+        lay.addWidget(foot)
 
-        r4.addWidget(self.btn_start, 1)
-        r4.addWidget(self.btn_hide)
-        r4.addWidget(self.btn_clear)
-        r4.addWidget(self.btn_close)
-        lay.addLayout(r4)
-
-        # ── 状态栏 ──
-        lay.addSpacing(2)
-        self.status_label = QLabel("●  就绪")
-        self.status_label.setStyleSheet(self._status_css("idle"))
-        lay.addWidget(self.status_label)
+        root.addWidget(body, 1)
 
         self.setFixedSize(400, 268)
-        self.setStyleSheet(
-            "ControlPanel{background:#161b22;border:1px solid #30363d;border-radius:8px;}"
-            "QWidget{color:#e6edf3;font-family:'Microsoft YaHei';}"
-            "QLabel{background:transparent;}")
+        self.setStyleSheet(self._panel_css())
         # 居中显示，避免出现在屏幕外或被遮
         scr = QApplication.primaryScreen().geometry()
         self.move(scr.center().x() - 200, scr.center().y() - 134)
+        self._refresh_region_readout()
+
+    # ── 样式表（按设计稿 :root token 逐条映射）──
+    @staticmethod
+    def _panel_css():
+        return (
+            "ControlPanel{background:#161b22;border:1px solid #30363d;border-radius:8px;}"
+            "QWidget{color:#e6edf3;font-family:'Microsoft YaHei';}"
+            "QLabel{background:transparent;}"
+            # 状态带
+            "QWidget#statusStrip{background:#1c2333;border-bottom:1px solid #30363d;}"
+            "QLabel#statusTitle{font-size:13px;font-weight:600;color:#e6edf3;}"
+            "QLabel#visionBadge{font-size:9px;letter-spacing:0.08em;color:#8b949e;"
+            "font-family:Consolas,monospace;border:1px solid #30363d;border-radius:9px;"
+            "padding:2px 7px;}"
+            "QLabel#regionReadout{font-size:10px;font-family:Consolas,monospace;color:#8b949e;}"
+            "QPushButton#iconBtn{background:transparent;border:1px solid transparent;"
+            "border-radius:4px;color:#8b949e;font-size:13px;padding:0;}"
+            "QPushButton#iconBtn:hover{background:#252c38;border-color:#6e7681;}"
+            "QPushButton#textLink{background:transparent;border:none;color:#8b949e;"
+            "font-size:10px;padding:0;}"
+            "QPushButton#textLink:hover{color:#e6edf3;}"
+            # 身体
+            "QWidget#panelBody{background:#161b22;}"
+            "QLabel#rowLabel{font-size:12px;color:#8b949e;}"
+            "QLabel#intervalValue{font-size:14px;font-family:Consolas,monospace;color:#e6edf3;}"
+            "QLabel#intervalValue i{font-size:11px;font-style:normal;color:#8b949e;}"
+            "QLabel#intervalHint{font-size:10px;color:#8b949e;}"
+            "QLabel#modeHint{font-size:10px;color:#8b949e;}"
+            # 底栏
+            "QWidget#panelFoot{border-top:1px solid #30363d;}"
+            "QLabel#footReadout{font-size:10px;font-family:Consolas,monospace;color:#8b949e;}"
+            "QLabel#footReadout.err{color:#ff7b72;}"
+            "QPushButton#retryBtn{background:#1c2333;border:1px solid #6e7681;"
+            "border-radius:4px;color:#e6edf3;font-size:11px;padding:0 10px;}"
+            "QPushButton#retryBtn:hover{background:#252c38;border-color:#8b949e;}"
+            "QPushButton#quitLink{background:transparent;border:none;color:#6e7681;"
+            "font-size:10px;padding:0;}"
+            "QPushButton#quitLink:hover{color:#8b949e;}"
+        )
+
+    @staticmethod
+    def _slider_css():
+        return (
+            "QSlider{background:transparent;}"
+            "QSlider::groove:horizontal{background:#30363d;height:4px;border-radius:2px;}"
+            "QSlider::sub-page:horizontal{background:#2ea043;border-radius:2px;}"
+            "QSlider::handle:horizontal{background:#2ea043;border:2px solid #161b22;"
+            "width:10px;height:10px;margin:-5px 0;border-radius:6px;}"
+            "QSlider::handle:horizontal:hover{background:#3fb950;}"
+        )
+
+    @staticmethod
+    def _seg_css():
+        # 注意：不能用 `QWidget{...}` —— 它会命中所有子控件（含 QPushButton），
+        # 把槽的底色和描边套到按钮上。必须用 objectName 精确限定容器。
+        #
+        # 槽的凹陷感靠三层对比撑起来：
+        #   槽底 --surface-sunk(#12171f) 比面板底 --bg(#161b22) 更暗 → 挖进去
+        #   槽描边 --border-ctl(#6e7681) 比其它发丝线亮 → 有边沿
+        #   选中段 --surface-hi(#252c38) 比槽底亮 → 凸出来
+        # 未选中段也要给底色，否则它会融进面板底色里，看不出「还有一个选项」。
+        return (
+            "QWidget#segControl{background:#0d1117;border:1px solid #6e7681;"
+            "border-radius:6px;}"
+            "QWidget#segControl QPushButton{background:#1c2333;"
+            "border:1px solid transparent;border-radius:4px;color:#8b949e;"
+            "font-size:11px;padding:0;}"
+            "QWidget#segControl QPushButton:hover{background:#252c38;color:#e6edf3;}"
+            "QWidget#segControl QPushButton:checked{background:#252c38;"
+            "border-color:#8b949e;color:#e6edf3;font-weight:600;}"
+        )
+
+    @staticmethod
+    def _cta_css(stop):
+        if stop:
+            base, hover, press = "#9e6a03", "#7d5303", "#6b4703"
+        else:
+            base, hover, press = "#1a7f37", "#1f883d", "#17692e"
+        return (
+            "QPushButton{background:%s;color:#fff;border:1px solid %s;border-radius:6px;"
+            "font-size:13px;font-weight:600;}"
+            "QPushButton:hover{background:%s;}"
+            "QPushButton:pressed{background:%s;}"
+            % (base, press, hover, press)
+        )
 
     @staticmethod
     def _key_css():
@@ -1274,37 +1402,64 @@ class ControlPanel(QWidget):
         else:
             self._start()
 
+    # ── 状态呈现（设计稿：LED + 状态词 + 底栏说明）──
+    def _set_state(self, kind, title=None, foot=None, foot_error=False):
+        """统一设置运行态：状态灯颜色 + 状态词 + 底栏读数。
+
+        kind: 'idle' | 'live' | 'region' | 'error'
+        """
+        self.status_led.set_kind(kind)
+        if title is not None:
+            self.status_title.setText(title)
+        if title is not None and kind == "error":
+            self.status_title.setStyleSheet(
+                "font-size:13px;font-weight:600;color:#ff7b72;background:transparent;")
+        else:
+            self.status_title.setStyleSheet(
+                "font-size:13px;font-weight:600;color:#e6edf3;background:transparent;")
+        if foot is not None:
+            self.status_label.setText(foot)
+        self.status_label.setStyleSheet(
+            "font-size:10px;font-family:Consolas,monospace;color:%s;background:transparent;"
+            % ("#ff7b72" if foot_error else "#8b949e"))
+        self.btn_retry.setVisible(kind == "error")
+
+    def _refresh_region_readout(self):
+        """状态带右侧显示当前捕获区域尺寸（设计稿读数位）。"""
+        try:
+            geo = self.capture_region.geometry()
+            self.region_readout.setText("%d×%d" % (geo.width(), geo.height()))
+        except Exception:
+            self.region_readout.setText("—")
+
     def _start(self):
         key = self.lang_combo.currentData()
         src, tgt = key.split("→")
         geo = self.capture_region.geometry()
-        pixel = bool(self.mode_combo.currentData())
+        pixel = bool(self.mode_seg.currentData())
 
         self.worker.configure((geo.x(), geo.y(), geo.width(), geo.height()),
                               src, tgt, pixel, interval=self.interval_slider.value())
         self.worker.start()
         self.btn_start.setText("⏹  停止")
-        self.btn_start.setStyleSheet(self._btn_css("#9e6a03", "#bb8009"))
+        self.btn_start.setStyleSheet(self._cta_css(True))
         self.lang_combo.setEnabled(False)
-        self.mode_combo.setEnabled(False)
-        self.status_label.setText("●  翻译中…")
-        self.status_label.setStyleSheet(self._status_css("live"))
+        self.mode_seg.setEnabled(False)
+        self._set_state("live", "翻译中", "正在翻译…")
         self.overlay.set_status("正在翻译…")
 
     def _stop(self):
         self.worker.stop()
         self.worker.wait(5000)
         self.btn_start.setText("▶  开始翻译")
-        self.btn_start.setStyleSheet(self._btn_css("#2ea043", "#3fb950"))
+        self.btn_start.setStyleSheet(self._cta_css(False))
         self.lang_combo.setEnabled(True)
-        self.mode_combo.setEnabled(True)
-        self.status_label.setText("●  已停止")
-        self.status_label.setStyleSheet(self._status_css("idle"))
+        self.mode_seg.setEnabled(True)
+        self._set_state("idle", "就绪", "已停止")
 
     def _clear_cache(self):
         self.worker.translator.clear_cache()
-        self.status_label.setText("●  缓存已清空")
-        self.status_label.setStyleSheet(self._status_css("idle"))
+        self._set_state(self.status_led.kind(), None, "缓存已清空")
 
     def _on_blocks(self, blocks):
         self.overlay.set_blocks(blocks)
@@ -1313,27 +1468,37 @@ class ControlPanel(QWidget):
         self.overlay.set_plain(text)
 
     def _on_status(self, msg):
-        self.status_label.setText("●  %s · %s" % (time.strftime("%H:%M:%S"), msg))
-        self.status_label.setStyleSheet(self._status_css("live"))
+        # 状态带保持「翻译中」，底栏跑逐次读数（时间 + 译文块数）
+        self.status_led.set_kind("live")
+        self.status_title.setText("翻译中")
+        self.status_title.setStyleSheet(
+            "font-size:13px;font-weight:600;color:#e6edf3;background:transparent;")
+        self.status_label.setText("%s · %s" % (time.strftime("%H:%M:%S"), msg))
+        self.status_label.setStyleSheet(
+            "font-size:10px;font-family:Consolas,monospace;color:#8b949e;background:transparent;")
 
     def _on_error(self, msg):
-        self.status_label.setText("▲  " + msg)
-        self.status_label.setStyleSheet(self._status_css("error"))
+        self._set_state("error", "错误", msg, foot_error=True)
         self.overlay.set_status("⚠ " + msg)
 
     def _on_region_changed(self):
         geo = self.capture_region.geometry()
         self.overlay.setGeometry(geo)
+        self._refresh_region_readout()
+        if not self.worker.isRunning():
+            self._set_state("region", "区域已选",
+                            "区域位置 %d, %d · 拖动边框可调整" % (geo.x(), geo.y()))
         if self.worker.isRunning():
             key = self.lang_combo.currentData()
             src, tgt = key.split("→")
             self.worker.configure((geo.x(), geo.y(), geo.width(), geo.height()),
-                                  src, tgt, bool(self.mode_combo.currentData()),
+                                  src, tgt, bool(self.mode_seg.currentData()),
                                   interval=self.interval_slider.value())
 
     def _on_interval_changed(self, v):
         """滑块调整立即生效（运行中也生效），不必重启翻译。"""
-        self.interval_label.setText("%ds" % v)
+        self.interval_label.setText("%d<i>秒</i>" % v)
+        self.interval_hint.setText("最快 %d 秒一次" % v)
         if self.worker.isRunning():
             self.worker.configure(self.worker._region, self.worker._source,
                                   self.worker._target, self.worker._pixel_mode,

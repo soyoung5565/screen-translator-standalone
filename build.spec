@@ -12,6 +12,10 @@ a = Analysis(
     hiddenimports=[
         'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets',
         'mss', 'PIL', 'requests',
+        # app.py 从 ui_components 导入 SegmentedControl / StatusDot，
+        # PyInstaller 会自动跟进 import，但显式列出更保险（分段控件是
+        # 打包后唯一的新 UI 组件，漏了就白屏）。
+        'ui_components',
     ],
     hookspath=[],
     hooksconfig={},

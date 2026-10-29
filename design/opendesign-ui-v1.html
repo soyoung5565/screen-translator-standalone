@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>屏幕翻译器 · 控制面板 UI 重设计稿</title>
+<meta name="description" content="屏幕翻译器（PyQt5 / Windows）控制面板的 UI 重设计视觉稿：400×268 客户区、四个运行状态并排、:root 变量表与逐控件 px 标注，供翻译为 Qt Style Sheets。">
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   屏幕翻译器 · 控制面板设计稿
+   颜色 token 全部集中在此 :root —— 改名即可整体换肤。
+   每个 token 后面的注释即「变量用途」，Qt 侧照此命名映射。
+   ═══════════════════════════════════════════════════════════════ */
+:root{
+  /* ── 面板层级（surface 越靠上越亮）──────────────────────── */
+  --bg:            #161b22;   /* 面板底色 —— 控件之间的留白底 */
+  --bg-deep:       #010409;   /* 最深层 —— 页面底 / 覆盖层遮罩 */
+  --surface:       #1c2333;   /* 状态带 / 输入控件底 / 幽灵按钮底 */
+  --surface-hi:    #252c38;   /* hover 态底色、选中分段底色 */
+  --surface-sunk:  #12171f;   /* 凹陷槽 —— 分段控件内槽 */
+  --border:        #30363d;   /* 发丝分隔线 —— 状态带下沿等非交互边界 */
+  --border-ctl:    #6e7681;   /* 可交互控件描边（对底色 3.77:1，达 3:1 图形门槛）*/
+  --border-ctl-hi: #8b949e;   /* 控件描边 hover / focus */
+
+  /* ── 文字四级 ──────────────────────────────────────────── */
+  --fg:            #e6edf3;   /* 主文字 —— 数值、读数、按钮文字（14.6:1）*/
+  --fg-dim:        #b7bfc7;   /* 次要正文 —— 状态说明（9.6:1）*/
+  --muted:         #8b949e;   /* 标签 / 占位 / 分段未选中（5.6:1）*/
+  --faint:         #6e7681;   /* 极低权重 —— 「退出」、禁用态（3.8:1）*/
+
+  /* ── 语义色（一个主色 = 品牌绿，其余为状态色）─────────── */
+  --accent:        #2ea043;   /* 品牌绿 —— 运行中 LED / 滑块填充 */
+  --accent-hover:  #3fb950;   /* 品牌绿 hover */
+  --accent-fill:   #1a7f37;   /* 主按钮底（白字 5.08:1）*/
+  --accent-fill-hi:#1f883d;   /* 主按钮 hover（白字 4.52:1）*/
+  --accent-press:  #17692e;   /* 主按钮按下 */
+  --info:          #58a6ff;   /* 区域就绪 LED / 标注色（6.9:1）*/
+  --warn:          #d29922;   /* 警告文案（6.9:1）*/
+  --warn-fill:     #9e6a03;   /* 停止按钮底（白字 4.65:1）*/
+  --warn-fill-hi:  #7d5303;   /* 停止按钮 hover —— 比常态更暗，保证白字 6.8:1 */
+  --warn-press:    #6b4703;   /* 停止按钮按下 */
+  --danger:        #f85149;   /* 错误 LED */
+  --danger-text:   #ff7b72;   /* 错误文案（6.9:1）*/
+
+  /* ── 字体 ─────────────────────────────────────────────── */
+  --font-ui:   'Microsoft YaHei','Segoe UI',system-ui,sans-serif; /* 中文与标签 */
+  --font-mono: Consolas,'JetBrains Mono','Courier New',monospace;  /* 数字与读数 */
+
+  /* ── 间距刻度（4 的倍数，全部落在 8px 网格上）───────── */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px;
+  --panel-w:400px; --panel-h:268px;
+
+  /* ── 贴字对照用的示意色（对应 PixelOverlay 实际配色）──── */
+  --mock-bg:#f5f6f8; --mock-bar:#262a36; --mock-fg:#14141a; --mock-on:#ffffff;
+  --ov-mask:#ffffff; --ov-ink:#960000; --ov-edge:rgba(200,0,0,.35);
+}
+
+/* ═══════════════════════ 页面骨架 ═══════════════════════ */
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:
+    radial-gradient(1200px 700px at 18% -8%, rgba(46,160,67,.07), transparent 62%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 32px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 1px, transparent 1px 32px),
+    var(--bg-deep);
+  color:var(--fg);
+  font-family:var(--font-ui);
+  font-size:14px;
+  line-height:1.6;
+  padding:0 0 80px;
+}
+.wrap{max-width:1760px;margin:0 auto;padding:0 28px}
+
+/* ── 页头 ── */
+.doc-head{padding:56px 0 40px;border-bottom:1px solid var(--border);margin-bottom:44px}
+.doc-head h1{
+  font-family:var(--font-ui);font-size:30px;font-weight:700;
+  letter-spacing:-.01em;line-height:1.35;margin-bottom:14px;
+}
+.doc-head .lede{max-width:76ch;color:var(--fg-dim);font-size:15px;line-height:1.75}
+.doc-head .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
+.chip{
+  font-family:var(--font-mono);font-size:11px;letter-spacing:.02em;
+  color:var(--muted);background:var(--surface);
+  border:1px solid var(--border);border-radius:5px;padding:4px 9px;
+}
+.chip b{color:var(--fg);font-weight:600}
+
+/* ── 章节 ── */
+.doc-sec{margin:0 0 60px}
+.sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px;flex-wrap:wrap}
+.sec-head h2{font-size:20px;font-weight:700;letter-spacing:-.01em;line-height:1.4}
+.sec-head .sec-idx{font-family:var(--font-mono);font-size:11px;color:var(--faint);letter-spacing:.12em}
+.sec-note{color:var(--muted);font-size:13px;line-height:1.75;max-width:82ch;margin-bottom:26px}
+
+/* ── 工具条（纯 CSS 开关，不依赖 JS）── */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.toolbar{display:flex;gap:8px;margin-bottom:22px;flex-wrap:wrap;align-items:center}
+.tgl{
+  display:inline-flex;align-items:center;gap:7px;
+  font-family:var(--font-ui);font-size:12px;color:var(--muted);
+  background:var(--surface);border:1px solid var(--border);border-radius:5px;
+  padding:7px 13px;cursor:pointer;user-select:none;
+  transition:background .18s,border-color .18s,color .18s;
+}
+.tgl:hover{background:var(--surface-hi);border-color:var(--border-ctl-hi);color:var(--fg)}
+.tgl:focus-within{outline:2px solid var(--accent-hover);outline-offset:2px}
+.tgl .dot{width:7px;height:7px;border-radius:2px;border:1px solid var(--border-ctl);flex:none}
+.tgl .kbd{
+  font-family:var(--font-mono);font-size:10px;color:var(--faint);
+  border:1px solid var(--border);border-radius:3px;padding:0 4px;
+}
+#chk-grid:checked ~ .toolbar .tgl[for="chk-grid"]{background:var(--surface-hi);border-color:var(--border-ctl);color:var(--fg)}
+#chk-grid:checked ~ .toolbar .tgl[for="chk-grid"] .dot{background:var(--info);border-color:var(--info)}
+
+/* ═══════════════════════ 面板本体 ═══════════════════════ */
+/* 四个状态永远并排一行，面板按 1:1 真实像素绘制。
+   宽屏放不下时整排等比缩小（zoom 会真实占据布局空间，
+   transform:scale 不会 —— 那会让面板压到下面的标题上）；
+   再窄就保持 1:1 横向滚动，宁可滚也不把标注缩小到读不清。 */
+.stage-row{display:flex;flex-wrap:nowrap;gap:24px;align-items:flex-start;overflow-x:auto;padding-bottom:6px}
+.cell{flex:none;width:400px;position:relative}
+
+.cap{margin-bottom:12px}
+.cap .hd{display:flex;align-items:baseline;gap:8px;margin-bottom:3px}
+.cap .n{font-family:var(--font-mono);font-size:11px;color:var(--faint);letter-spacing:.14em}
+.cap h3{font-size:15px;font-weight:600;letter-spacing:0;line-height:1.5}
+.cap .why{font-size:12px;color:var(--muted);line-height:1.6}
+
+.panel{
+  width:400px;height:268px;flex:none;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:8px;
+  overflow:hidden;
+  display:flex;flex-direction:column;
+  font-family:var(--font-ui);
+  color:var(--fg);
+  position:relative;
+}
+/* 8px 网格叠加层（勾选后显示） */
+#chk-grid:checked ~ .stage-row .panel::after{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:9;
+  background:
+    repeating-linear-gradient(90deg, rgba(88,166,255,.22) 0 1px, transparent 1px 8px),
+    repeating-linear-gradient(0deg, rgba(88,166,255,.22) 0 1px, transparent 1px 8px);
+}
+
+/* ── 状态带 40px ── */
+.strip{
+  height:40px;flex:none;display:flex;align-items:center;gap:10px;
+  padding:0 16px;background:var(--surface);
+  border-bottom:1px solid var(--border);
+}
+.led{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+.led.idle{background:var(--muted)}
+.led.live{background:var(--accent)}
+.led.region{background:var(--info)}
+.led.error{background:var(--danger)}
+
+.strip-title{font-size:13px;font-weight:600;letter-spacing:0;line-height:1;white-space:nowrap}
+.strip-title.t-error{color:var(--danger-text)}
+
+.tag{
+  font-family:var(--font-mono);font-size:9px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--muted);
+  border:1px solid var(--border);border-radius:9px;padding:2px 7px;
+  line-height:1;white-space:nowrap;
+}
+.strip-spacer{flex:1}
+.strip-sub{
+  font-family:var(--font-mono);font-size:10px;color:var(--muted);
+  letter-spacing:.02em;white-space:nowrap;
+}
+
+.icon-btn{
+  width:22px;height:22px;flex:none;display:grid;place-items:center;
+  background:transparent;border:1px solid transparent;border-radius:4px;
+  color:var(--muted);cursor:pointer;padding:0;
+  transition:background .18s,border-color .18s,color .18s;
+}
+.icon-btn:hover{background:var(--surface-hi);border-color:var(--border-ctl-hi);color:var(--fg)}
+.icon-btn:focus-visible{outline:2px solid var(--accent-hover);outline-offset:1px}
+.icon-btn svg{width:14px;height:14px;display:block}
+
+.link{
+  font-family:var(--font-ui);font-size:10px;color:var(--muted);
+  background:none;border:0;padding:0;cursor:pointer;white-space:nowrap;
+  transition:color .18s;
+}
+.link:hover{color:var(--fg)}
+.link:focus-visible{outline:2px solid var(--accent-hover);outline-offset:2px;border-radius:2px}
+.link.quit{color:var(--faint)}
+.link.quit:hover{color:var(--muted)}
+
+/* ── 身体 212px ── */
+.body{flex:1;padding:8px 16px;display:flex;flex-direction:column;overflow:hidden}
+
+.row{display:flex;align-items:center;gap:12px}
+.row-lang{height:36px;margin-bottom:8px}
+.row-int{height:32px;margin-bottom:8px}
+.row-mode{height:32px;margin-bottom:4px}
+
+.lbl{
+  width:64px;flex:none;font-size:12px;color:var(--muted);
+  letter-spacing:.02em;white-space:nowrap;
+}
+
+/* 下拉框 —— 描边提到 3:1，一眼看出可点 */
+.combo{
+  flex:1;height:36px;display:flex;align-items:center;gap:8px;
+  background:var(--surface);border:1px solid var(--border-ctl);border-radius:6px;
+  padding:0 10px 0 12px;cursor:pointer;
+  transition:background .18s,border-color .18s;
+}
+.combo:hover{background:var(--surface-hi);border-color:var(--border-ctl-hi)}
+.combo:focus-visible{outline:2px solid var(--accent-hover);outline-offset:1px}
+.combo-val{font-size:13px;color:var(--fg);letter-spacing:0;white-space:nowrap}
+.combo svg{width:10px;height:6px;flex:none;color:var(--muted);margin-left:auto}
+.combo.off{background:var(--surface-sunk);border-color:var(--border);cursor:default}
+.combo.off .combo-val{color:var(--muted)}
+.combo.off svg{color:var(--faint)}
+
+/* 滑块 */
+.slider{flex:1;min-width:0}
+.trk{position:relative;height:4px;background:var(--border);border-radius:2px}
+.trk .fl{height:4px;background:var(--accent);border-radius:2px}
+.trk .knob{
+  position:absolute;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+  border-radius:50%;background:var(--accent);border:2px solid var(--bg);
+}
+.trk .knob::after{
+  content:"";position:absolute;inset:-4px;border-radius:50%;
+  border:1px solid transparent;transition:border-color .18s;
+}
+.slider:hover .knob::after{border-color:var(--border-ctl-hi)}
+
+.val{display:flex;flex-direction:column;align-items:flex-end;gap:0;width:96px;flex:none}
+.val .n{font-family:var(--font-mono);font-size:14px;color:var(--fg);line-height:16px}
+.val .n i{font-style:normal;font-family:var(--font-ui);font-size:11px;color:var(--muted);margin-left:2px}
+.val .h{font-size:10px;color:var(--muted);line-height:13px;white-space:nowrap}
+
+/* 分段控件 —— 二选一，比下拉框少一次点击 */
+.seg{
+  flex:1;height:32px;display:flex;gap:2px;padding:2px;
+  background:var(--surface-sunk);border:1px solid var(--border-ctl);border-radius:6px;
+}
+.seg-item{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:var(--muted);border:1px solid transparent;border-radius:4px;
+  white-space:nowrap;transition:background .18s,color .18s,border-color .18s;
+}
+.seg-item.on{background:var(--surface-hi);border-color:var(--border-ctl);color:var(--fg)}
+.seg.off .seg-item{color:var(--faint)}
+.seg.off .seg-item.on{color:var(--muted);background:var(--surface);border-color:var(--border)}
+
+/* 模式说明 —— 回答「这俩有啥区别」 */
+.mode-hint{
+  height:16px;line-height:16px;font-size:10px;color:var(--muted);
+  margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* 主按钮 —— 面板里唯一的实心按钮 */
+.cta{
+  height:36px;flex:none;margin-bottom:8px;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  font-family:var(--font-ui);font-size:13px;font-weight:600;letter-spacing:.02em;
+  color:#fff;background:var(--accent-fill);
+  border:1px solid var(--accent-press);border-radius:6px;cursor:pointer;
+  transition:background .18s,border-color .18s,transform .1s;
+}
+.cta:hover{background:var(--accent-fill-hi);border-color:var(--accent-press)}
+.cta:active{background:var(--accent-press);transform:translateY(1px)}
+.cta:focus-visible{outline:2px solid var(--accent-hover);outline-offset:2px}
+.cta svg{width:10px;height:10px;flex:none}
+.cta.stop{background:var(--warn-fill);border-color:var(--warn-press)}
+.cta.stop:hover{background:var(--warn-fill-hi)}
+.cta.stop:active{background:var(--warn-press)}
+
+/* 底栏 28px —— 1px 上沿 + 内容行 */
+.foot{
+  height:28px;flex:none;display:flex;align-items:center;gap:12px;
+  border-top:1px solid var(--border);padding-top:3px;
+}
+.foot-read{
+  flex:1;font-family:var(--font-mono);font-size:10px;color:var(--muted);
+  letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.foot-read.err{font-family:var(--font-ui);font-size:11px;color:var(--fg-dim)}
+.ghost-btn{
+  height:20px;padding:0 9px;flex:none;
+  font-family:var(--font-ui);font-size:11px;color:var(--fg);
+  background:var(--surface);border:1px solid var(--border-ctl);border-radius:5px;
+  cursor:pointer;transition:background .18s,border-color .18s;
+}
+.ghost-btn:hover{background:var(--surface-hi);border-color:var(--border-ctl-hi)}
+.ghost-btn:focus-visible{outline:2px solid var(--accent-hover);outline-offset:2px}
+
+/* ═══════════════════════ 1:1 纵向标尺（画在面板左侧，不压内容）══════ */
+.diagram{display:flex;gap:12px;align-items:flex-start}
+.dg-scale{width:244px;flex:none;position:relative;height:268px}
+/* 真比例色块列 */
+.dg-track{position:absolute;left:22px;top:0;width:36px;height:268px}
+.dg-blk{position:absolute;left:0;width:36px;border-radius:2px;background:rgba(88,166,255,.38)}
+.dg-blk.gap{background:var(--border)}
+/* 间距高度数字（只标 gap，避免与内容标签抢位） */
+.dg-num{
+  position:absolute;left:0;width:18px;text-align:right;
+  font-family:var(--font-mono);font-size:9px;color:var(--faint);
+  line-height:9px;
+}
+/* 内容区段标签 */
+.dg-lab{
+  position:absolute;left:66px;right:0;display:flex;align-items:baseline;gap:8px;
+  font-size:11px;color:var(--fg-dim);line-height:14px;
+}
+.dg-lab .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dg-lab .hv{margin-left:auto;font-family:var(--font-mono);color:var(--info);white-space:nowrap}
+.dg-formula{
+  margin-top:18px;font-family:var(--font-mono);font-size:12px;color:var(--muted);
+  line-height:2;letter-spacing:.01em;
+}
+.dg-formula b{color:var(--fg);font-weight:400}
+.dg-formula .hl{color:var(--info)}
+
+/* ═══════════════════════ 表格 ═══════════════════════ */
+.tbl-wrap{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  text-align:left;font-weight:600;font-size:11px;letter-spacing:.06em;
+  color:var(--muted);background:var(--surface-sunk);
+  padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap;
+}
+td{padding:11px 14px;border-bottom:1px solid var(--border);color:var(--fg-dim);vertical-align:top;line-height:1.65}
+tr:last-child td{border-bottom:0}
+td code,td .k{
+  font-family:var(--font-mono);font-size:12px;color:var(--fg);
+  background:var(--surface-hi);border-radius:3px;padding:1px 5px;white-space:nowrap;
+}
+td strong{color:var(--fg);font-weight:600}
+.tbl-scroll{overflow-x:auto}
+
+/* ═══════════════════════ 贴字模式对照 ═══════════════════════ */
+.mode-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:24px}
+.mode-card{border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
+.mode-card .hd{padding:14px 16px;border-bottom:1px solid var(--border)}
+.mode-card .hd h4{font-size:14px;font-weight:600;letter-spacing:0;line-height:1.5;margin-bottom:4px}
+.mode-card .hd p{font-size:12px;color:var(--muted);line-height:1.7}
+.mode-tag{
+  display:inline-block;font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;
+  color:var(--faint);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
+  margin-top:9px;
+}
+.mock{
+  margin:16px;position:relative;height:220px;border-radius:6px;overflow:hidden;
+  background:var(--mock-bg);color:var(--mock-fg);
+  font-family:'Segoe UI',system-ui,sans-serif;
+}
+.mock .bar{height:38px;background:var(--mock-bar);color:var(--mock-on);display:flex;align-items:center;padding:0 14px;font-size:14px;font-weight:600}
+.mock .rows{padding:14px 14px 0}
+.mock .row-en{font-size:13px;line-height:38px;height:38px;color:var(--mock-fg)}
+.ov{position:absolute;border:1px solid var(--ov-edge);background:var(--ov-mask);color:var(--ov-ink);font-size:13px;line-height:1.3;display:flex;align-items:center;padding:0 3px}
+.ov.whole{
+  left:0;right:0;top:0;bottom:0;background:rgba(18,20,24,.94);
+  border:0;color:#e6edf3;padding:14px;display:block;font-size:13px;line-height:1.9;
+}
+.mode-note{font-size:12px;color:var(--muted);padding:0 16px 16px;line-height:1.7}
+.mode-note b{color:var(--fg-dim);font-weight:600}
+
+/* ═══════════════════════ 说明区 ═══════════════════════ */
+.note-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:20px}
+.note-card{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:18px 20px}
+.note-card h4{font-size:14px;font-weight:600;letter-spacing:0;line-height:1.5;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.note-card h4 .idx{font-family:var(--font-mono);font-size:10px;color:var(--faint);letter-spacing:.1em}
+.note-card p{font-size:13px;color:var(--fg-dim);line-height:1.8;margin-bottom:10px}
+.note-card p:last-child{margin-bottom:0}
+.note-card ul{margin:0;padding-left:18px}
+.note-card li{font-size:13px;color:var(--fg-dim);line-height:1.85;margin-bottom:6px}
+.note-card li::marker{color:var(--faint)}
+.note-card b{color:var(--fg);font-weight:600}
+.note-card .tbl-wrap{background:transparent;border:0;border-radius:0}
+.note-card table{font-size:12px}
+.note-card th{padding:7px 10px;font-size:10px}
+.note-card td{padding:7px 10px;border-bottom-color:var(--border)}
+.pill-ok{
+  display:inline-block;font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;
+  padding:1px 6px;border-radius:9px;border:1px solid var(--border-ctl);color:var(--fg-dim);
+  white-space:nowrap;margin-right:6px;
+}
+.pill-need{
+  display:inline-block;font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;
+  padding:1px 6px;border-radius:9px;border:1px solid var(--warn);color:var(--warn);
+  white-space:nowrap;margin-right:6px;
+}
+.pill-no{
+  display:inline-block;font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;
+  padding:1px 6px;border-radius:9px;border:1px solid var(--danger);color:var(--danger-text);
+  white-space:nowrap;margin-right:6px;
+}
+
+.doc-foot{
+  border-top:1px solid var(--border);padding-top:24px;margin-top:12px;
+  font-size:12px;color:var(--faint);line-height:1.8;
+}
+
+/* ── 窄屏：整排等比缩小；再窄保持 1:1 横向滚动 ── */
+@media (max-width:1727px){ .stage-row{zoom:.95} }
+@media (max-width:1640px){ .stage-row{zoom:.90} }
+@media (max-width:1553px){ .stage-row{zoom:.85} }
+@media (max-width:1466px){ .stage-row{zoom:.80} }
+@media (max-width:1379px){ .stage-row{zoom:.75} }
+@media (max-width:1292px){ .stage-row{zoom:.70} }
+@media (max-width:1205px){ .stage-row{zoom:.65} }
+@media (max-width:1118px){ .stage-row{zoom:.60} }
+@media (max-width:1031px){ .stage-row{zoom:.55} }
+@media (max-width:944px){ .stage-row{zoom:.50} }
+@media (max-width:900px){
+  .wrap{padding:0 16px}
+  .diagram{flex-direction:column}
+  .dg-scale{width:100%;height:auto;min-height:268px}
+  .dg-track{position:relative;left:0;width:36px;height:268px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ═══════════════ 页头 ═══════════════ -->
+  <header class="doc-head" data-od-id="doc-header">
+    <h1 data-od-id="doc-title">屏幕翻译器 · 控制面板 UI 重设计稿</h1>
+    <p class="lede">
+      PyQt5 桌面工具的面板重设计。客户区固定 <strong>400 × 268</strong>，系统标题栏由 Windows 绘制、不在本稿范围内。
+      面板从「三行等权重表单」改成<strong>「顶部状态读数 + 三项设置 + 唯一主操作」</strong>：
+      状态提到最上方成为仪表盘读数，贴字模式改为二选一分段控件，退出操作降到面板最底部的极低权重文字。
+      全部交互行为不变，只改视觉层级与信息优先级。
+    </p>
+    <div class="meta">
+      <span class="chip"><b>客户区</b> 400 × 268 px</span>
+      <span class="chip"><b>标题栏</b> 系统原生，另计</span>
+      <span class="chip"><b>主题</b> GitHub Dark 系（暗色）</span>
+      <span class="chip"><b>网格</b> 4 / 8 px</span>
+      <span class="chip"><b>状态</b> 4 种并排</span>
+      <span class="chip"><b>实现</b> Qt Style Sheets 可表达</span>
+    </div>
+  </header>
+
+  <!-- ═══════════════ 四个状态 ═══════════════ -->
+  <section class="doc-sec" id="sec-states" data-od-id="sec-states">
+    <div class="sec-head">
+      <span class="sec-idx">01</span>
+      <h2 data-od-id="sec-states-title">四个运行状态</h2>
+    </div>
+    <p class="sec-note">
+      四块面板是同一个 400 × 268 客户区的四种状态，几何结构完全一致，只有内容与配色随状态变化 —— 窗口不重排、不跳动。
+      全部按 <b>1:1 真实像素</b>绘制，页面上显示的每一个尺寸标注都可以直接抄进 Qt 布局。
+    </p>
+
+    <input type="checkbox" id="chk-grid" class="sr-only">
+    <div class="toolbar">
+      <label class="tgl" for="chk-grid"><span class="dot" aria-hidden="true"></span>显示 8px 网格</label>
+      <span class="tgl" style="cursor:default"><span class="kbd">400 × 268</span>客户区，1:1 未缩放</span>
+      <span class="tgl" style="cursor:default"><span class="kbd">Ctrl+Alt+S / H / Q</span>全局热键</span>
+    </div>
+
+    <div class="stage-row" id="stage-row">
+
+      <!-- ── 状态 01 就绪 ── -->
+      <div class="cell" data-od-id="cell-idle">
+        <div class="cap">
+          <div class="hd"><span class="n">01</span><h3>就绪</h3></div>
+          <p class="why">未运行。全部设置可改，LED 灰、状态词即状态。</p>
+        </div>
+        <div class="panel" data-od-id="panel-idle">
+          <div class="strip" data-od-id="strip-idle">
+            <span class="led idle" aria-hidden="true"></span>
+            <span class="strip-title">就绪</span>
+            <span class="tag">LLM VISION</span>
+            <span class="strip-spacer"></span>
+            <span class="strip-sub">640×420</span>
+            <button class="icon-btn" type="button" title="清空翻译缓存" aria-label="清空翻译缓存" data-od-id="btn-clear-idle">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.2 1.6v2.6h-2.6"/>
+              </svg>
+            </button>
+            <button class="link" type="button" data-od-id="btn-hide-idle">隐藏</button>
+          </div>
+          <div class="body">
+            <div class="row row-lang">
+              <span class="lbl">翻译方向</span>
+              <div class="combo" tabindex="0" role="button" aria-haspopup="listbox" aria-label="翻译方向" data-od-id="combo-lang-idle">
+                <span class="combo-val">英文→中文</span>
+                <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 1.2 5 4.8 9 1.2"/>
+                </svg>
+              </div>
+            </div>
+            <div class="row row-int">
+              <span class="lbl">刷新间隔</span>
+              <div class="slider" role="slider" aria-label="刷新间隔" aria-valuemin="1" aria-valuemax="15" aria-valuenow="3" data-od-id="slider-idle">
+                <div class="trk">
+                  <div class="fl" style="width:calc(7px + (100% - 14px) * 0.14286)"></div>
+                  <div class="knob" style="left:calc(7px + (100% - 14px) * 0.14286)"></div>
+                </div>
+              </div>
+              <div class="val">
+                <span class="n">3<i>秒</i></span>
+                <span class="h">最快 3 秒一次</span>
+              </div>
+            </div>
+            <div class="row row-mode">
+              <span class="lbl">贴字模式</span>
+              <div class="seg" role="radiogroup" aria-label="贴字模式" data-od-id="seg-mode-idle">
+                <span class="seg-item on" role="radio" aria-checked="true">像素级 · 原位贴字</span>
+                <span class="seg-item" role="radio" aria-checked="false">整图翻译</span>
+              </div>
+            </div>
+            <p class="mode-hint">译文按原文的像素尺寸原位覆盖，原排版不变。</p>
+            <button class="cta" type="button" data-od-id="cta-start-idle">
+              <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M1.6 0.4 9 5 1.6 9.6Z"/></svg>
+              开始翻译
+            </button>
+            <div class="foot">
+              <span class="foot-read">Ctrl+Alt+S 开始/停止</span>
+              <button class="link quit" type="button" data-od-id="btn-quit-idle">退出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 状态 02 翻译中 ── -->
+      <div class="cell" data-od-id="cell-live">
+        <div class="cap">
+          <div class="hd"><span class="n">02</span><h3>翻译中</h3></div>
+          <p class="why">LED 呼吸、状态词加亮、翻译方向与贴字模式锁定（与现有代码一致），滑块仍可实时调。</p>
+        </div>
+        <div class="panel" data-od-id="panel-live">
+          <div class="strip" data-od-id="strip-live">
+            <span class="led live" aria-hidden="true"></span>
+            <span class="strip-title">翻译中</span>
+            <span class="tag">LLM VISION</span>
+            <span class="strip-spacer"></span>
+            <span class="strip-sub">640×420</span>
+            <button class="icon-btn" type="button" title="清空翻译缓存" aria-label="清空翻译缓存" data-od-id="btn-clear-live">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.2 1.6v2.6h-2.6"/>
+              </svg>
+            </button>
+            <button class="link" type="button" data-od-id="btn-hide-live">隐藏</button>
+          </div>
+          <div class="body">
+            <div class="row row-lang">
+              <span class="lbl">翻译方向</span>
+              <div class="combo off" aria-disabled="true" data-od-id="combo-lang-live">
+                <span class="combo-val">英文→中文</span>
+                <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 1.2 5 4.8 9 1.2"/>
+                </svg>
+              </div>
+            </div>
+            <div class="row row-int">
+              <span class="lbl">刷新间隔</span>
+              <div class="slider" role="slider" aria-label="刷新间隔" aria-valuemin="1" aria-valuemax="15" aria-valuenow="5" data-od-id="slider-live">
+                <div class="trk">
+                  <div class="fl" style="width:calc(7px + (100% - 14px) * 0.28571)"></div>
+                  <div class="knob" style="left:calc(7px + (100% - 14px) * 0.28571)"></div>
+                </div>
+              </div>
+              <div class="val">
+                <span class="n">5<i>秒</i></span>
+                <span class="h">最快 5 秒一次</span>
+              </div>
+            </div>
+            <div class="row row-mode">
+              <span class="lbl">贴字模式</span>
+              <div class="seg off" aria-disabled="true" data-od-id="seg-mode-live">
+                <span class="seg-item on" role="radio" aria-checked="true">像素级 · 原位贴字</span>
+                <span class="seg-item" role="radio" aria-checked="false">整图翻译</span>
+              </div>
+            </div>
+            <p class="mode-hint">译文按原文的像素尺寸原位覆盖，原排版不变。</p>
+            <button class="cta stop" type="button" data-od-id="cta-stop-live">
+              <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+              停止
+            </button>
+            <div class="foot">
+              <span class="foot-read">14:32:07 · 像素级翻译 · 7 块</span>
+              <button class="link quit" type="button" data-od-id="btn-quit-live">退出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 状态 03 区域已选 ── -->
+      <div class="cell" data-od-id="cell-region">
+        <div class="cap">
+          <div class="hd"><span class="n">03</span><h3>区域已选</h3></div>
+          <p class="why">刚拖完捕获框。LED 转蓝，右侧读数换成新区域尺寸，底部给出区域位置。</p>
+        </div>
+        <div class="panel" data-od-id="panel-region">
+          <div class="strip" data-od-id="strip-region">
+            <span class="led region" aria-hidden="true"></span>
+            <span class="strip-title">区域已选</span>
+            <span class="tag">LLM VISION</span>
+            <span class="strip-spacer"></span>
+            <span class="strip-sub">1024×576</span>
+            <button class="icon-btn" type="button" title="清空翻译缓存" aria-label="清空翻译缓存" data-od-id="btn-clear-region">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.2 1.6v2.6h-2.6"/>
+              </svg>
+            </button>
+            <button class="link" type="button" data-od-id="btn-hide-region">隐藏</button>
+          </div>
+          <div class="body">
+            <div class="row row-lang">
+              <span class="lbl">翻译方向</span>
+              <div class="combo" tabindex="0" role="button" aria-haspopup="listbox" aria-label="翻译方向" data-od-id="combo-lang-region">
+                <span class="combo-val">英文→中文</span>
+                <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 1.2 5 4.8 9 1.2"/>
+                </svg>
+              </div>
+            </div>
+            <div class="row row-int">
+              <span class="lbl">刷新间隔</span>
+              <div class="slider" role="slider" aria-label="刷新间隔" aria-valuemin="1" aria-valuemax="15" aria-valuenow="3" data-od-id="slider-region">
+                <div class="trk">
+                  <div class="fl" style="width:calc(7px + (100% - 14px) * 0.14286)"></div>
+                  <div class="knob" style="left:calc(7px + (100% - 14px) * 0.14286)"></div>
+                </div>
+              </div>
+              <div class="val">
+                <span class="n">3<i>秒</i></span>
+                <span class="h">最快 3 秒一次</span>
+              </div>
+            </div>
+            <div class="row row-mode">
+              <span class="lbl">贴字模式</span>
+              <div class="seg" role="radiogroup" aria-label="贴字模式" data-od-id="seg-mode-region">
+                <span class="seg-item on" role="radio" aria-checked="true">像素级 · 原位贴字</span>
+                <span class="seg-item" role="radio" aria-checked="false">整图翻译</span>
+              </div>
+            </div>
+            <p class="mode-hint">译文按原文的像素尺寸原位覆盖，原排版不变。</p>
+            <button class="cta" type="button" data-od-id="cta-start-region">
+              <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M1.6 0.4 9 5 1.6 9.6Z"/></svg>
+              开始翻译
+            </button>
+            <div class="foot">
+              <span class="foot-read">区域位置 1920, 1080 · 拖动边框可调整</span>
+              <button class="link quit" type="button" data-od-id="btn-quit-region">退出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 状态 04 错误 ── -->
+      <div class="cell" data-od-id="cell-error">
+        <div class="cap">
+          <div class="hd"><span class="n">04</span><h3>错误</h3></div>
+          <p class="why">LED 转红、状态位给出错误码，底栏给可读原因与「重试」入口。</p>
+        </div>
+        <div class="panel" data-od-id="panel-error">
+          <div class="strip" data-od-id="strip-error">
+            <span class="led error" aria-hidden="true"></span>
+            <span class="strip-title t-error">鉴权失败(401)</span>
+            <span class="tag">LLM VISION</span>
+            <span class="strip-spacer"></span>
+            <span class="strip-sub">640×420</span>
+            <button class="icon-btn" type="button" title="清空翻译缓存" aria-label="清空翻译缓存" data-od-id="btn-clear-error">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.2 1.6v2.6h-2.6"/>
+              </svg>
+            </button>
+            <button class="link" type="button" data-od-id="btn-hide-error">隐藏</button>
+          </div>
+          <div class="body">
+            <div class="row row-lang">
+              <span class="lbl">翻译方向</span>
+              <div class="combo off" aria-disabled="true" data-od-id="combo-lang-error">
+                <span class="combo-val">英文→中文</span>
+                <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 1.2 5 4.8 9 1.2"/>
+                </svg>
+              </div>
+            </div>
+            <div class="row row-int">
+              <span class="lbl">刷新间隔</span>
+              <div class="slider" role="slider" aria-label="刷新间隔" aria-valuemin="1" aria-valuemax="15" aria-valuenow="3" data-od-id="slider-error">
+                <div class="trk">
+                  <div class="fl" style="width:calc(7px + (100% - 14px) * 0.14286)"></div>
+                  <div class="knob" style="left:calc(7px + (100% - 14px) * 0.14286)"></div>
+                </div>
+              </div>
+              <div class="val">
+                <span class="n">3<i>秒</i></span>
+                <span class="h">最快 3 秒一次</span>
+              </div>
+            </div>
+            <div class="row row-mode">
+              <span class="lbl">贴字模式</span>
+              <div class="seg off" aria-disabled="true" data-od-id="seg-mode-error">
+                <span class="seg-item on" role="radio" aria-checked="true">像素级 · 原位贴字</span>
+                <span class="seg-item" role="radio" aria-checked="false">整图翻译</span>
+              </div>
+            </div>
+            <p class="mode-hint">译文按原文的像素尺寸原位覆盖，原排版不变。</p>
+            <button class="cta stop" type="button" data-od-id="cta-stop-error">
+              <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+              停止
+            </button>
+            <div class="foot">
+              <span class="foot-read err">API Key 无效或已过期，检查 .env 后重试</span>
+              <button class="ghost-btn" type="button" data-od-id="btn-retry-error">重试</button>
+              <button class="link quit" type="button" data-od-id="btn-quit-error">退出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════ 标注 ═══════════════ -->
+  <section class="doc-sec" id="sec-ann" data-od-id="sec-annotation">
+    <div class="sec-head">
+      <span class="sec-idx">02</span>
+      <h2 data-od-id="sec-ann-title">400 × 268 纵向节奏</h2>
+    </div>
+    <p class="sec-note">
+      客户区纵向被切成 14 段，每一段的高度都是 4 的倍数，落在 8px 网格上。
+      四种状态共用同一套纵向节奏 —— 状态切换时窗口不重排，控件位置纹丝不动。
+      <b>合计 40（状态带）+ 212（身体）+ 16（上下内边距）= 268</b>，与现有 <span class="k">setFixedSize(400, 268)</span> 完全吻合。
+      左侧标尺与右侧面板同高 1:1 对齐 —— 每个色块的**高度就是该区段的真实像素高度**，横向那列数字是各段之间留白的像素数。
+    </p>
+
+    <div class="diagram">
+      <div class="dg-scale" aria-hidden="true">
+        <div class="dg-track">
+          <div class="dg-blk" style="top:0;height:40"></div>
+          <div class="dg-blk gap" style="top:40;height:8"></div>
+          <div class="dg-blk" style="top:48;height:36"></div>
+          <div class="dg-blk gap" style="top:84;height:8"></div>
+          <div class="dg-blk" style="top:92;height:32"></div>
+          <div class="dg-blk gap" style="top:124;height:8"></div>
+          <div class="dg-blk" style="top:132;height:32"></div>
+          <div class="dg-blk gap" style="top:164;height:4"></div>
+          <div class="dg-blk" style="top:168;height:16"></div>
+          <div class="dg-blk gap" style="top:184;height:4"></div>
+          <div class="dg-blk" style="top:188;height:36"></div>
+          <div class="dg-blk gap" style="top:224;height:8"></div>
+          <div class="dg-blk" style="top:232;height:28"></div>
+          <div class="dg-blk gap" style="top:260;height:8"></div>
+        </div>
+        <span class="dg-num" style="top:40">8</span>
+        <span class="dg-num" style="top:84">8</span>
+        <span class="dg-num" style="top:124">8</span>
+        <span class="dg-num" style="top:164">4</span>
+        <span class="dg-num" style="top:184">4</span>
+        <span class="dg-num" style="top:224">8</span>
+        <span class="dg-num" style="top:260">8</span>
+        <div class="dg-lab" style="top:0"><span class="nm">状态带</span><span class="hv">40</span></div>
+        <div class="dg-lab" style="top:48"><span class="nm">翻译方向</span><span class="hv">36</span></div>
+        <div class="dg-lab" style="top:92"><span class="nm">刷新间隔</span><span class="hv">32</span></div>
+        <div class="dg-lab" style="top:132"><span class="nm">贴字模式</span><span class="hv">32</span></div>
+        <div class="dg-lab" style="top:168"><span class="nm">模式说明</span><span class="hv">16</span></div>
+        <div class="dg-lab" style="top:188"><span class="nm">主按钮</span><span class="hv">36</span></div>
+        <div class="dg-lab" style="top:232"><span class="nm">底栏</span><span class="hv">28</span></div>
+      </div>
+
+      <div class="panel" data-od-id="panel-annotated">
+        <div class="strip">
+          <span class="led idle" aria-hidden="true"></span>
+          <span class="strip-title">就绪</span>
+          <span class="tag">LLM VISION</span>
+          <span class="strip-spacer"></span>
+          <span class="strip-sub">640×420</span>
+          <button class="icon-btn" type="button" tabindex="-1" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.2 1.6v2.6h-2.6"/>
+            </svg>
+          </button>
+          <button class="link" type="button" tabindex="-1" aria-hidden="true">隐藏</button>
+        </div>
+        <div class="body">
+          <div class="row row-lang">
+            <span class="lbl">翻译方向</span>
+            <div class="combo" tabindex="-1" aria-hidden="true">
+              <span class="combo-val">英文→中文</span>
+              <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 1.2 5 4.8 9 1.2"/>
+              </svg>
+            </div>
+          </div>
+          <div class="row row-int">
+            <span class="lbl">刷新间隔</span>
+            <div class="slider" aria-hidden="true">
+              <div class="trk">
+                <div class="fl" style="width:calc(7px + (100% - 14px) * 0.14286)"></div>
+                <div class="knob" style="left:calc(7px + (100% - 14px) * 0.14286)"></div>
+              </div>
+            </div>
+            <div class="val">
+              <span class="n">3<i>秒</i></span>
+              <span class="h">最快 3 秒一次</span>
+            </div>
+          </div>
+          <div class="row row-mode">
+            <span class="lbl">贴字模式</span>
+            <div class="seg" aria-hidden="true">
+              <span class="seg-item on">像素级 · 原位贴字</span>
+              <span class="seg-item">整图翻译</span>
+            </div>
+          </div>
+          <p class="mode-hint">译文按原文的像素尺寸原位覆盖，原排版不变。</p>
+          <button class="cta" type="button" tabindex="-1" aria-hidden="true">
+            <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M1.6 0.4 9 5 1.6 9.6Z"/></svg>
+            开始翻译
+          </button>
+          <div class="foot">
+            <span class="foot-read">Ctrl+Alt+S 开始/停止</span>
+            <button class="link quit" type="button" tabindex="-1" aria-hidden="true">退出</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dg-formula">
+      客户区 <b>400</b> = 1px 描边 + 内容区 <b>398</b>　│　内容区 <b>398</b> = 左内边距 <span class="hl">16</span> + 内容宽 <span class="hl">366</span> + 右内边距 <span class="hl">16</span><br>
+      内容宽 <b>366</b> = 标签列 <span class="hl">64</span> + 间距 <span class="hl">12</span> + 控件区 <span class="hl">290</span><br>
+      控件区 <b>290</b> = 滑块 <span class="hl">182</span> + 间距 <span class="hl">12</span> + 数值区 <span class="hl">96</span>　│　分段控件 290 → 两段各 <span class="hl">141</span>
+    </div>
+
+    <div class="tbl-wrap tbl-scroll" style="margin-top:26px">
+      <table>
+        <thead>
+          <tr><th style="width:120px">区段</th><th style="width:78px">Y 起</th><th style="width:78px">高度</th><th>内容与实现要点</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="k">状态带</span></td><td>0</td><td>40</td><td>LED 8×8 · 状态词 13px/600 · <span class="k">LLM VISION</span> 徽标 9px · 区域尺寸 10px 等宽 · 清缓存 22×22 · 隐藏文字</td></tr>
+          <tr><td><span class="k">上内边距</span></td><td>40</td><td>8</td><td>身体顶部留白</td></tr>
+          <tr><td><span class="k">翻译方向</span></td><td>48</td><td>36</td><td>下拉框比其余两行高 4px —— 主选项，视觉权重更高</td></tr>
+          <tr><td>间距</td><td>84</td><td>8</td><td>—</td></tr>
+          <tr><td><span class="k">刷新间隔</span></td><td>92</td><td>32</td><td>滑块 182px 宽 + 数值区 96px</td></tr>
+          <tr><td>间距</td><td>124</td><td>8</td><td>—</td></tr>
+          <tr><td><span class="k">贴字模式</span></td><td>132</td><td>32</td><td>分段控件，两段各 141px</td></tr>
+          <tr><td>间距</td><td>164</td><td>4</td><td>—</td></tr>
+          <tr><td><span class="k">模式说明</span></td><td>168</td><td>16</td><td>10px，一行解释当前模式的行为差异</td></tr>
+          <tr><td>间距</td><td>184</td><td>4</td><td>—</td></tr>
+          <tr><td><span class="k">主按钮</span></td><td>188</td><td>36</td><td>366 × 36，占满内容宽</td></tr>
+          <tr><td>间距</td><td>224</td><td>8</td><td>—</td></tr>
+          <tr><td><span class="k">底栏</span></td><td>232</td><td>28</td><td>上沿 1px 发丝线 + 状态说明 + 重试（仅错误态）+ 退出</td></tr>
+          <tr><td><span class="k">下内边距</span></td><td>260</td><td>8</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══════════════ 控件规格 ═══════════════ -->
+  <section class="doc-sec" id="sec-spec" data-od-id="sec-spec">
+    <div class="sec-head">
+      <span class="sec-idx">03</span>
+      <h2 data-od-id="sec-spec-title">逐控件规格</h2>
+    </div>
+    <p class="sec-note">
+      客户区宽 400，1px 描边由 Qt 样式表画在客户区内侧（不占布局），因此内容区宽 398，左右内边距各 16 → 可用内容宽 366。
+      标签列 64 + 间距 12 → 控件区 290。
+    </p>
+    <div class="tbl-wrap tbl-scroll">
+      <table>
+        <thead>
+          <tr><th style="width:130px">控件</th><th style="width:180px">尺寸 / 位置</th><th style="width:120px">字号 · 字重</th><th>配色与状态</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>面板客户区</td><td>400 × 268</td><td>—</td><td>底 <span class="k">--bg</span>，1px <span class="k">--border</span>，圆角 8（QSS 可表达）</td></tr>
+          <tr><td>状态带</td><td>398 × 40</td><td>—</td><td>底 <span class="k">--surface</span>，下沿 1px <span class="k">--border</span></td></tr>
+          <tr><td>状态灯 LED</td><td>8 × 8，圆</td><td>—</td><td>就绪 <span class="k">--muted</span> / 运行 <span class="k">--accent</span> / 区域 <span class="k">--info</span> / 错误 <span class="k">--danger</span>。<strong>需自定义绘制</strong></td></tr>
+          <tr><td>状态词</td><td>左起 x=34</td><td>13px / 600</td><td>就绪·翻译中·区域已选 用 <span class="k">--fg</span>；错误用 <span class="k">--danger-text</span>（6.9:1）</td></tr>
+          <tr><td>LLM VISION 徽标</td><td>高 18，圆角 9</td><td>9px 等宽 / 0.08em</td><td>字 <span class="k">--muted</span>，底 <span class="k">--surface</span>，1px <span class="k">--border</span> —— 弱化但保留</td></tr>
+          <tr><td>区域尺寸读数</td><td>右对齐</td><td>10px 等宽</td><td><span class="k">--muted</span>，形如 <span class="k">640×420</span></td></tr>
+          <tr><td>清缓存 ⟳</td><td>22 × 22</td><td>—</td><td>图标按钮，无填充，hover 出现 <span class="k">--surface-hi</span> 底 + 描边</td></tr>
+          <tr><td>隐藏</td><td>文字</td><td>10px / 400</td><td><span class="k">--muted</span>，hover 转 <span class="k">--fg</span></td></tr>
+          <tr><td>翻译方向标签</td><td>64 × 行高</td><td>12px / 400</td><td><span class="k">--muted</span></td></tr>
+          <tr><td>翻译方向下拉框</td><td>290 × 36</td><td>值 13px / 400</td><td>底 <span class="k">--surface</span>，描边 1px <span class="k">--border-ctl</span>（3.77:1），圆角 6，右端 10×6 下拉箭头</td></tr>
+          <tr><td>刷新间隔滑块</td><td>宽 182，槽 4，手柄 14×14</td><td>—</td><td>槽 <span class="k">--border</span>，填充 <span class="k">--accent</span>，手柄 <span class="k">--accent</span> + 2px <span class="k">--bg</span> 描边</td></tr>
+          <tr><td>间隔数值区</td><td>96，右对齐</td><td>数字 14px 等宽 + 「秒」11px</td><td>数字 <span class="k">--fg</span>，单位与说明 <span class="k">--muted</span></td></tr>
+          <tr><td>贴字模式分段控件</td><td>290 × 32，两段各 141</td><td>11px / 400</td><td>槽 <span class="k">--surface-sunk</span> + 描边 <span class="k">--border-ctl</span>；选中段底 <span class="k">--surface-hi</span> + 描边 <span class="k">--border-ctl</span>，字 <span class="k">--fg</span>；未选中字 <span class="k">--muted</span></td></tr>
+          <tr><td>模式说明</td><td>高 16</td><td>10px / 400</td><td><span class="k">--muted</span></td></tr>
+          <tr><td>主按钮</td><td>366 × 36</td><td>13px / 600 / 0.02em</td><td>待机底 <span class="k">--accent-fill</span>（白字 5.08:1），hover <span class="k">--accent-fill-hi</span>；运行中底 <span class="k">--warn-fill</span>（白字 4.65:1），hover <span class="k">--warn-fill-hi</span></td></tr>
+          <tr><td>底栏</td><td>高 28</td><td>10px 等宽 / 11px 文字</td><td>上沿 1px <span class="k">--border</span>；说明 <span class="k">--muted</span></td></tr>
+          <tr><td>重试按钮</td><td>高 20</td><td>11px / 400</td><td>仅错误态出现；底 <span class="k">--surface</span>，描边 <span class="k">--border-ctl</span>，字 <span class="k">--fg</span></td></tr>
+          <tr><td>退出</td><td>文字</td><td>10px / 400</td><td><span class="k">--faint</span>（3.8:1，仅此一处低对比），hover 转 <span class="k">--muted</span>。红色只留给真正的错误</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══════════════ 贴字模式 ═══════════════ -->
+  <section class="doc-sec" id="sec-modes" data-od-id="sec-modes">
+    <div class="sec-head">
+      <span class="sec-idx">04</span>
+      <h2 data-od-id="sec-modes-title">贴字模式：两种模式到底差在哪</h2>
+    </div>
+    <p class="sec-note">
+      「像素级 · 原位贴字」对第一次用的人是天书。下面的对照用真实覆盖层配色（浅底白罩 + 深红字 / 深底深罩 + 浅绿字）说明差别，
+      面板里那句 10px 说明就是这两段的浓缩版。
+    </p>
+    <div class="mode-grid">
+      <div class="mode-card" data-od-id="mode-card-pixel">
+        <div class="hd">
+          <h4>像素级 · 原位贴字（默认）</h4>
+          <p>模型逐行返回坐标，每个词组被原地盖住并贴上译文，原文排版、图标、层级全部不动。</p>
+          <span class="mode-tag">示意图 · 非真实截图</span>
+        </div>
+        <div class="mock" aria-label="像素级原位贴字示意图">
+          <div class="bar">Control Panel</div>
+          <div class="rows">
+            <div class="row-en">Display brightness</div>
+            <div class="row-en">Network connection</div>
+            <div class="row-en">Automatic backup</div>
+            <div class="row-en">Sign out of account</div>
+          </div>
+          <div class="ov" style="left:14px;top:38px;width:118px;height:19px">显示亮度</div>
+          <div class="ov" style="left:14px;top:76px;width:122px;height:19px">网络连接</div>
+          <div class="ov" style="left:14px;top:114px;width:104px;height:19px">自动备份</div>
+          <div class="ov" style="left:14px;top:152px;width:116px;height:19px">退出账户</div>
+        </div>
+        <p class="mode-note">
+          <b>覆盖层：</b>浅底用白罩（alpha 230）+ 深红字 #960000；深底用深罩 + 浅绿字，避免在深色界面上贴出白斑。
+          <b>适合：</b>游戏、IDE、需要保持原版式的界面。
+        </p>
+      </div>
+      <div class="mode-card" data-od-id="mode-card-whole">
+        <div class="hd">
+          <h4>整图翻译</h4>
+          <p>整段画面渲染成一张译文图覆盖区域，不保留原排版，适合长文章、PDF、聊天记录这类连续文本。</p>
+          <span class="mode-tag">示意图 · 非真实截图</span>
+        </div>
+        <div class="mock" aria-label="整图翻译示意图">
+          <div class="bar">Control Panel</div>
+          <div class="rows">
+            <div class="row-en">Display brightness</div>
+            <div class="row-en">Network connection</div>
+            <div class="row-en">Automatic backup</div>
+            <div class="row-en">Sign out of account</div>
+          </div>
+          <div class="ov whole">
+            控制面板<br>
+            显示亮度<br>
+            网络连接<br>
+            自动备份<br>
+            退出账户
+          </div>
+        </div>
+        <p class="mode-note">
+          <b>覆盖层：</b>整区域半透明深罩 + 纯文本行，不做坐标定位。
+          <b>适合：</b>连续文本段落 —— 此时「原位」反而会破坏排版。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ 设计说明 ═══════════════ -->
+  <section class="doc-sec" id="sec-notes" data-od-id="sec-notes">
+    <div class="sec-head">
+      <span class="sec-idx">05</span>
+      <h2 data-od-id="sec-notes-title">设计说明</h2>
+    </div>
+    <p class="sec-note">
+      改动点、为什么改、与现有代码的对应关系、Qt 落地时的能力边界。
+    </p>
+
+    <div class="note-grid">
+
+      <div class="note-card" data-od-id="note-changes">
+        <h4><span class="idx">A</span>改动点与理由</h4>
+        <ul>
+          <li><b>状态行提到顶部</b> —— 状态栏原本是底部 10px 灰字，翻译中（95% 的时间）几乎看不见。现在 LED + 状态词占据顶部 40px，是整个面板第一眼落点。</li>
+          <li><b>层级靠对比度建立</b> —— 不再靠颜色数量。主按钮 13px/600 实心，次要项 12px 标签 + 描边控件，辅助操作 10px 文字，危险操作 10px 淡灰。四档一眼可分。</li>
+          <li><b>退出降权</b> —— 原来是红色描边的 34×34 按钮，和主按钮并排，视觉上比「开始翻译」还重。现在是面板最底部的 10px 淡灰文字「退出」，红色只在真正报错时出现。</li>
+          <li><b>贴字模式改分段控件</b> —— 两个选项一眼看全、一次点击切换，不用展开下拉才知道有第二种。附 10px 说明解释差异。</li>
+          <li><b>下拉框描边提到 3:1</b> —— 原来纯色块看不出能点。现在 1px <span class="k">--border-ctl</span>（#6e7681，对底色 3.77:1）+ 明确的下拉箭头。</li>
+          <li><b>滑块补上数值语义</b> —— 数值区第二行写「最快 3 秒一次」，直接回答「这是帧率还是请求间隔」。</li>
+          <li><b>去掉重复标题</b> —— 系统标题栏已经写着「屏幕翻译器」，面板内不再重复标题，把这 40px 让给状态读数。</li>
+        </ul>
+      </div>
+
+      <div class="note-card" data-od-id="note-code">
+        <h4><span class="idx">B</span>与现有代码的对应关系</h4>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>现有控件（app.py）</th><th>新形态</th></tr></thead>
+            <tbody>
+              <tr><td>标题 <span class="k">QLabel</span></td><td>删除（系统标题栏已承担）</td></tr>
+              <tr><td><span class="k">LLM VISION</span> 徽标</td><td>移入状态带，弱化为 9px 描边标签</td></tr>
+              <tr><td><span class="k">status_label</span> 状态栏</td><td>拆成：状态带 LED+状态词、底栏状态说明</td></tr>
+              <tr><td><span class="k">lang_combo</span></td><td>保留，36px 高 + 描边 + 箭头</td></tr>
+              <tr><td><span class="k">interval_slider</span></td><td>保留，右侧补数值语义两行</td></tr>
+              <tr><td><span class="k">mode_combo</span></td><td>换成两个 checkable <span class="k">QPushButton</span> + <span class="k">QButtonGroup</span></td></tr>
+              <tr><td><span class="k">btn_start</span></td><td>保留，改为通栏 366×36</td></tr>
+              <tr><td><span class="k">btn_hide</span></td><td>改为状态带右侧 10px 文字</td></tr>
+              <tr><td><span class="k">btn_clear</span></td><td>改为状态带右侧 22×22 图标按钮</td></tr>
+              <tr><td><span class="k">btn_close</span></td><td>改为底栏右下角 10px 淡灰文字「退出」</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="note-card" data-od-id="note-qt">
+        <h4><span class="idx">C</span>Qt 落地能力边界</h4>
+        <p><span class="pill-ok">QSS 可表达</span> 圆角、1px 描边、背景色、字体字号字重、padding、<span class="k">:hover</span> / <span class="k">:pressed</span> / <span class="k">:disabled</span> / <span class="k">:focus</span>、分段控件 <span class="k">:checked</span>、上下边框、文本对齐。</p>
+        <p><span class="pill-need">需自定义绘制</span> <b>状态灯</b>：QSS 画不了圆点，用一个 <span class="k">LedDot(QWidget)</span> 的 paintEvent 画圆；「翻译中」的呼吸效果用 <span class="k">QPropertyAnimation</span> 改 opacity，1.6s 往返。<b>降级</b>：不做呼吸动画，改成实心绿点 + <span class="k">--accent</span> 外发光边框（QSS border 实现），视觉上仍然是「活着」的。</p>
+        <p><span class="pill-need">需自定义绘制</span> <b>图标</b>：下拉箭头、清缓存箭头沿用现有 <span class="k">combo_arrow_path()</span> 方案 —— 运行时用 QPainter 画 PNG 存临时目录，QSS 里 <span class="k">url(...)</span> 引用。新增图标用同一个函数扩展。</p>
+        <p><span class="pill-no">QSS 不支持</span> <b>box-shadow</b>：按钮不投影，改用「描边 + 底色分层」制造层级（主按钮 1px 深边、按压时底色变深 + 下移 1px 模拟按压）。<b>text-overflow</b>：QSS 没有 ellipsis，状态词过长时用 <span class="k">QFontMetrics.elidedText()</span> 在代码里截断。<b>伪元素</b>：QSS 没有 <span class="k">::before</span>，所有装饰都必须是真实控件或自绘。</p>
+        <p><span class="pill-need">需确认</span> <b>letter-spacing</b>：QSS 从 Qt 5.11 起支持，若目标环境 PyQt5 版本偏老则该属性被忽略 —— 徽标仍可读，只是字距略紧。</p>
+      </div>
+
+      <div class="note-card" data-od-id="note-tokens">
+        <h4><span class="idx">D</span>配色理由</h4>
+        <p>整份稿子只用<strong>一个</strong>品牌绿（<span class="k">--accent</span> 族），其余全是中性灰。绿只在三处出现：运行中 LED、滑块填充、主按钮底色 —— 每一个都承担明确的语义。</p>
+        <p>对比度实测（WCAG）：主文字 14.6:1、次文字 5.6:1、禁用态 3.8:1、主按钮白字 5.1:1、停止按钮白字 4.7:1、错误文字 6.9:1、控件描边对底色 3.8:1。</p>
+        <p>两处与现状不同、且是有意为之：<br>
+          · 主按钮底色从 <span class="k">#2ea043</span> 改为 <span class="k">#1a7f37</span> —— 原配色白字只有 3.37:1，达不到 4.5:1；新配色 5.08:1。<br>
+          · 停止按钮 hover 从「变亮」改为「变暗」（<span class="k">#9e6a03</span> → <span class="k">#7d5303</span>）—— 变亮后白字只剩 3.38:1，变暗后 6.75:1。
+        </p>
+      </div>
+
+      <div class="note-card" data-od-id="note-rejected">
+        <h4><span class="idx">E</span>未采纳的建议与理由</h4>
+        <ul>
+          <li><b>「目标语言」改写标签</b> —— 建议稿写「目标语言」，但既有代码与文案是「翻译方向」，且它同时管源语言与目标语言（自动→中文 / 中文→英文…）。保持原文案，避免改坏 LANG_PAIRS 的语义。</li>
+          <li><b>退出放进标题栏</b> —— 本项目用系统标题栏，无法在标题栏右侧塞按钮。退到底栏最右下角的 10px 灰字。</li>
+          <li><b>退出继续用 ✕ 图标</b> —— 系统标题栏右上角已经有一个 ✕（当前行为是收起到托盘）。面板里再放一个 ✕ 会被误认成同一个按钮，且两处行为不同。改用文字「退出」，彻底消除歧义。</li>
+          <li><b>保留 ✕ 的红色</b> —— 红色是错误色。退出是常用操作而非事故，用红色会持续制造紧张感。红色只留给 401 这类真实错误。</li>
+        </ul>
+      </div>
+
+      <div class="note-card" data-od-id="note-accept">
+        <h4><span class="idx">F</span>验收对照</h4>
+        <ul>
+          <li><b>改写 _setup_ui</b> —— 新增 <span class="k">LedDot</span> 子类与状态带容器；<span class="k">mode_combo</span> 换 <span class="k">QButtonGroup</span>；三个辅助按钮改为文字/图标形式。窗口仍 <span class="k">setFixedSize(400, 268)</span>。</li>
+          <li><b>ui_preview.py</b> —— 仍用原生 windows 插件渲染；<span class="k">grab()</span> 可截到自绘 LED 的静态帧，呼吸动画在预览图里呈现为某一帧的透明度，可接受。</li>
+          <li><b>测试全绿</b> —— 本稿不改任何坐标逻辑与热键注册；<span class="k">Ctrl+Alt+S / H / Q</span> 三组热键与托盘行为完全未动。</li>
+          <li><b>--selftest</b> —— 与本稿无关（验的是打包资源、配置路径、解析器、视觉链路、墨迹校正）。</li>
+          <li><b>快捷方式</b> —— 与本稿无关。</li>
+        </ul>
+      </div>
+
+    </div>
+
+    <div class="doc-foot">
+      屏幕翻译器 · 控制面板 UI 重设计稿 —— 客户区 400 × 268，四个状态并排，纯 HTML + CSS，无外部资源，离线可打开。<br>
+      所有尺寸、颜色、间距均可直接翻译为 Qt Style Sheets；标注「需自定义绘制」处附降级方案。
+    </div>
+  </section>
+
+</div>
+</body>
+</html>
